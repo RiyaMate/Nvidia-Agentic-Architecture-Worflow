@@ -11,6 +11,4 @@ venv/
 .gitignore
 .DS_Store
 *.pdf
-pyproject.toml
-poetry.lock
 web_agent/

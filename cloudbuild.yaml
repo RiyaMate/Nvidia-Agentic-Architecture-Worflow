@@ -1,0 +1,6 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '--progress=plain', '-t', 'gcr.io/gen-lang-client-0567410120/fastapi-agentic-app', '.']
+images:
+- 'gcr.io/gen-lang-client-0567410120/fastapi-agentic-app'
+timeout: '3600s'  # 1 hour timeout for large builds

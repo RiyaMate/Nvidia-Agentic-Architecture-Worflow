@@ -1,0 +1,10 @@
+# Explicitly include poetry files
+!poetry.lock
+!pyproject.toml
+
+# Default excludes
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+*$py.class
