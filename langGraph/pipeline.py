@@ -340,9 +340,12 @@ def generate_workflow_diagram(filename="nvidia_workflow"):
         print(f"Warning: Could not generate diagram: {e}")
         return None
 
-def build_pipeline():
+def build_pipeline(selected_agents=None):
     """
-    Build and return the compiled pipeline
+    Build and return the compiled pipeline based on selected agents
+    
+    Args:
+        selected_agents: List of agent names or "All Agents"
     """
     # Create state graph
     graph = StateGraph(NvidiaGPTState)
@@ -354,24 +357,44 @@ def build_pipeline():
     def agent_with_gpt(state):
         return agent_node(state, nvidia_gpt)
     
-    # Add nodes
+    # Add start node
     graph.add_node("start", start_node)
-    graph.add_node("web_search", web_search_node)
-    graph.add_node("rag_search", rag_search_node)
-    graph.add_node("snowflake", snowflake_node)
-    graph.add_node("agent", agent_with_gpt)  # Use the closure instead
-    graph.add_node("report_generator", final_report_node)
     
-    # Set flow
-    graph.set_entry_point("start")
-    graph.add_edge("start", "web_search")
-    graph.add_edge("start", "rag_search")
-    graph.add_edge("start", "snowflake")
-    graph.add_edge("web_search", "agent")
-    graph.add_edge("rag_search", "agent")
-    graph.add_edge("snowflake", "agent")
-    graph.add_edge("agent", "report_generator")
-    graph.add_edge("report_generator", END)
+    # Add nodes based on selected agents
+    if selected_agents is None or "All Agents" in selected_agents:
+        # Add all nodes for full pipeline
+        graph.add_node("web_search", web_search_node)
+        graph.add_node("rag_search", rag_search_node)
+        graph.add_node("snowflake", snowflake_node)
+        graph.add_node("agent", agent_with_gpt)
+        graph.add_node("report_generator", final_report_node)
+        
+        # Set full flow
+        graph.set_entry_point("start")
+        graph.add_edge("start", "web_search")
+        graph.add_edge("start", "rag_search")
+        graph.add_edge("start", "snowflake")
+        graph.add_edge("web_search", "agent")
+        graph.add_edge("rag_search", "agent")
+        graph.add_edge("snowflake", "agent")
+        graph.add_edge("agent", "report_generator")
+        graph.add_edge("report_generator", END)
+    else:
+        # Add only selected agent nodes
+        if "Web Search Agent" in selected_agents:
+            graph.add_node("web_search", web_search_node)
+            graph.add_edge("start", "web_search")
+            graph.add_edge("web_search", END)
+            
+        if "RAG Agent" in selected_agents:
+            graph.add_node("rag_search", rag_search_node)
+            graph.add_edge("start", "rag_search")
+            graph.add_edge("rag_search", END)
+            
+        if "Snowflake Agent" in selected_agents:
+            graph.add_node("snowflake", snowflake_node)
+            graph.add_edge("start", "snowflake")
+            graph.add_edge("snowflake", END)
     
     return graph.compile()
 

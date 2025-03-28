@@ -50,42 +50,54 @@ def query_snowflake(question: str) -> Dict:
         }
 
  
-def get_valuation_summary(query:str=None) -> dict:
-    """Get NVIDIA valuation metrics visualization"""
+def get_valuation_summary(query: str = None) -> dict:
+    """Get NVIDIA valuation metrics visualization as a stacked area chart."""
     try:
         # Use base query
         df = pd.read_sql("SELECT * FROM Valuation_Measures ORDER BY DATE DESC LIMIT 5", conn)
         
-        # Generate visualization
-        plt.figure(figsize=(10, 6))
-        for date in df["DATE"].unique():
-            subset = df[df["DATE"] == date]
-            plt.bar(subset.columns[1:], subset.iloc[0, 1:], label=str(date))
+        # Normalize the data for all metrics (excluding the DATE column)
+        df_normalized = df.copy()
+        metrics = df.columns[1:]  # Exclude the DATE column
+        for metric in metrics:
+            df_normalized[metric] = (df[metric] - df[metric].min()) / (df[metric].max() - df[metric].min())
         
-        plt.xlabel("Metric")
-        plt.ylabel("Value")
-        plt.title("NVIDIA Valuation Metrics")
-        plt.xticks(rotation=45)
-        plt.legend()
+        # Plot the stacked area chart with reduced figure size
+        plt.figure(figsize=(8, 6))  # Reduced from (12, 8)
+        x = df_normalized["DATE"].astype(str)
+        y = df_normalized[metrics]
+        plt.stackplot(x, y.T, labels=metrics, alpha=0.8)
         
-        # Convert plot to base64
-        buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight')
-        buf.seek(0)
-        img_str = base64.b64encode(buf.getvalue()).decode()
+        plt.xlabel("Date", fontsize=10)
+        plt.ylabel("Normalized Value", fontsize=10)
+        plt.title("NVIDIA Metrics Over Time", fontsize=12)
+        plt.xticks(rotation=45, ha="right", fontsize=8)
+        plt.legend(loc="upper left", title="Metrics", fontsize=8)
+        plt.tight_layout()
         
-        return {
-            "chart": img_str,
-            "summary": df.to_string(),
-            "status": "success"
+        # Save chart with lower resolution
+        chart_file_path = "nvidia_stacked_area_chart.png"
+        plt.savefig(chart_file_path, format="png", dpi=150)  # Reduced from 300 dpi
+        plt.close()
+        
+        # Create a simplified summary instead of using the full DataFrame
+        summary_dict = {
+            "dates": df_normalized["DATE"].astype(str).tolist(),
+            "latest_values": df_normalized[metrics].iloc[0].to_dict(),
+            "metrics_analyzed": len(metrics)
         }
         
+        return {
+            "summary": str(summary_dict),
+            "status": "success"
+        }
+    
     except Exception as e:
         return {
             "error": str(e),
             "status": "failed"
         }
-         
+
 # Create LangChain tool for the Snowflake agent
 snowflake_tool = Tool(
     name="nvidia_financial_metrics",
@@ -94,8 +106,9 @@ snowflake_tool = Tool(
 )
 
 llm = ChatAnthropic(
-    model="claude-3-haiku-20240307",  
+    model="claude-3-haiku-20240307",
     temperature=0,
+    max_tokens_to_sample=150,  # Reduced from 300
     anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')  # Get from environment instead of hardcoding
 ) 
 
@@ -117,16 +130,37 @@ except Exception as e:
  
 def get_ai_analysis():
     """Get AI-generated analysis of NVIDIA metrics"""
-    prompt = """Analyze NVIDIA financial metrics using the nvidia_financial_metrics tool.
-    Provide a brief summary of key insights."""
+    prompt = """Analyze NVIDIA's financial metrics and provide insights.
+    Focus on key trends in market cap, PE ratios, and other valuation measures.
+    Keep the analysis brief and highlight the most important changes."""
     
     try:
-        response = agent.invoke({"input": prompt})
-        return response.get("output", str(response))
+        # Get the metrics data first
+        metrics_data = get_valuation_summary()
+        if metrics_data["status"] == "failed":
+            return f"Error getting metrics: {metrics_data['error']}"
+        
+        # Print debug information
+        print("Retrieved metrics data:")
+        print(metrics_data["summary"])
+        
+        # Invoke the agent with specific instructions
+        response = agent.run(prompt)  # Using run() instead of invoke()
+        
+        return f"""
+Analysis Results:
+----------------
+{response}
+
+Note: A visualization has been saved as 'nvidia_stacked_area_chart.png'
+"""
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
-        return "Analysis unavailable - Rate limit exceeded. Please try again later."  
+        return "Analysis unavailable - Please try again later."
 
 if __name__ == "__main__":
+    print("Starting NVIDIA metrics analysis...")
     analysis = get_ai_analysis()
+    print("\nAnalysis Output:")
+    print("---------------")
     print(analysis)

@@ -25,8 +25,10 @@ QUERY_URL = f"{API_URL}/research_report"
 # -------------------------------
 st.sidebar.title("NVIDIA Research Assistant")
 
-# Search Type
+# Search Type and Agent Selection
 st.sidebar.markdown("### Search Configuration")
+
+# Update the search type radio button
 search_type = st.sidebar.radio(
     "Select Search Type",
     options=["All Quarters", "Specific Quarter"],
@@ -55,6 +57,52 @@ else:
     st.session_state.quarter_slider = "all"
     st.session_state.period_select = ["all"]
 
+# Add spacing in sidebar
+st.sidebar.markdown("---")
+
+# Add Agent Selection after periods
+st.sidebar.markdown("### Agent Configuration")
+
+# multiselect for agents
+available_agents = ["Snowflake Agent", "RAG Agent", "Web Search Agent"]
+selected_agents = st.sidebar.multiselect(
+    "Select AI Agents",
+    options=available_agents,
+    default=available_agents,  # By default, select all agents
+    key="agent_type"
+)
+
+# Add an "All Agents" checkbox
+use_all_agents = st.sidebar.checkbox(
+    "Use All Agents",
+    value=True,
+    key="use_all_agents"
+)
+
+# Add a submit button for agent selection
+agent_submitted = st.sidebar.button(
+    "Apply Agent Selection",
+    type="primary",
+    use_container_width=True,
+    key="apply_agents"
+)
+
+# Update the agent_type based on selection when submitted
+if agent_submitted:
+    if use_all_agents:
+        st.session_state.agent_type = "All Agents"
+    else:
+        if not selected_agents:  # If no agents selected, default to all
+            st.session_state.agent_type = "All Agents"
+        elif len(selected_agents) == len(available_agents):  # If all agents selected
+            st.session_state.agent_type = "All Agents"
+        else:
+            st.session_state.agent_type = selected_agents
+    st.sidebar.success("Agent selection updated!")
+
+# Add spacing in sidebar
+st.sidebar.markdown("---")
+
 # Initialize session state for navigation if not set
 if 'current_page' not in st.session_state:
     st.session_state.current_page = "Home"
@@ -62,16 +110,46 @@ if 'current_page' not in st.session_state:
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
-# Navigation Buttons
-for page_name in ["Home", "Combined Report", "About"]:
-    if st.sidebar.button(
-        page_name,
-        key=f"nav_{page_name}",
-        type="primary" if st.session_state.current_page == page_name else "secondary",
-        use_container_width=True
-    ):
-        st.session_state.current_page = page_name
-        st.rerun()
+# Navigation Buttons - Updated styling
+nav_col1, nav_col2, nav_col3 = st.sidebar.columns(3)
+
+with nav_col1:
+    home_btn = st.button(
+        "Home",
+        key="nav_Home",
+        type="primary" if st.session_state.current_page == "Home" else "secondary",
+        use_container_width=True,
+        disabled=False  # Enable the button
+    )
+
+with nav_col2:
+    report_btn = st.button(
+        "Report",
+        key="nav_Report",
+        type="primary" if st.session_state.current_page == "Combined Report" else "secondary",
+        use_container_width=True,
+        disabled=False  # Enable the button
+    )
+
+with nav_col3:
+    about_btn = st.button(
+        "About",
+        key="nav_About",
+        type="primary" if st.session_state.current_page == "Combined Report" else "secondary",
+        use_container_width=True,
+        disabled=False  # Enable the button
+    )
+
+# Handle navigation button clicks
+if home_btn:
+    st.session_state.current_page = "Home"
+    st.rerun()
+elif report_btn:
+    st.session_state.current_page = "Combined Report"
+    st.rerun()
+elif about_btn:
+    st.session_state.current_page = "About"
+    st.rerun()
 
 # Current page
 page = st.session_state.current_page
@@ -223,6 +301,34 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
     background-color: #5c8d00 !important; /* darker green hover */
     color: #fff !important;
 }
+
+/* ---------------------------------- */
+/* Agent Selection Submit Button */
+/* ---------------------------------- */
+[data-testid="stButton"] button[kind="primary"] {
+    background-color: #76B900 !important;
+    color: white !important;
+    border: none !important;
+    padding: 0.5rem 1rem !important;
+    border-radius: 4px !important;
+    transition: background-color 0.3s ease !important;
+}
+
+[data-testid="stButton"] button[kind="primary"]:hover {
+    background-color: #5c8d00 !important;
+}
+
+/* ---------------------------------- */
+/* Navigation Buttons Layout */
+/* ---------------------------------- */
+[data-testid="column"] {
+    padding: 0.25rem !important;
+}
+
+[data-testid="stButton"] button {
+    width: 100% !important;
+    margin: 0 !important;
+}
 </style>
 
 
@@ -277,9 +383,7 @@ elif page == "Combined Report":
                     </div>
                     """, unsafe_allow_html=True)
 
-    # -----------
-    # Input form
-    # -----------
+    # ----------- Input form -----------
     st.markdown("---")
     with st.form(key="report_form", clear_on_submit=True):
         question = st.text_input(
@@ -287,106 +391,118 @@ elif page == "Combined Report":
             placeholder="What has driven NVIDIA's revenue growth in recent quarters?",
             key="question_input"
         )
-        # We use the existing radio button + multiselect in the sidebar, so just read from session_state
         st_type = st.session_state.search_type
         selected_periods = (
             st.session_state.get("period_select", ["2023q1"])
             if st_type == "Specific Quarter"
             else ["all"]
         )
-
-        # Circular ChatGPT-like submit
         submitted = st.form_submit_button("➤", use_container_width=True)
 
-    # -----------
-    # On Submit
-    # -----------
+    # ----------- On Submit -----------
     if submitted and question:
         with st.spinner("🤖 Generating comprehensive NVIDIA analysis..."):
+            agents_to_use = ["All Agents"] if use_all_agents else selected_agents
             payload = {
                 "question": question,
                 "search_type": st_type,
-                "selected_periods": selected_periods
+                "selected_periods": selected_periods,
+                "agents": agents_to_use
             }
             try:
                 response = requests.post(QUERY_URL, json=payload)
                 if response.status_code == 200:
                     data = response.json()
-                    
-                    # Add to chat history (User)
                     st.session_state.chat_history.append({
                         "role": "user",
                         "content": question,
                         "search_type": st_type,
-                        "selected_periods": selected_periods
+                        "selected_periods": selected_periods,
+                        "agents": agents_to_use
                     })
-                    # Add to chat history (Assistant)
+                    if "Snowflake Agent" in agents_to_use:
+                        content = data.get("valuation_data", {}).get("summary", "No Snowflake data available")
+                    elif "RAG Agent" in agents_to_use:
+                        content = data.get("rag_output", {}).get("result", "No RAG data available")
+                    elif "Web Search Agent" in agents_to_use:
+                        content = data.get("web_output", "No web search data available")
+                    else:
+                        content = data.get("final_report", "No report generated")
                     st.session_state.chat_history.append({
                         "role": "assistant",
-                        "content": data.get("final_report", "No report generated"),
-                        "rag_output": data.get("rag_output", {}),
-                        "snowflake_data": data.get("valuation_data", {})
+                        "content": content,
+                        "agents": agents_to_use,
+                        "rag_output": data.get("rag_output", {}) if "RAG Agent" in agents_to_use else None,
+                        "snowflake_data": data.get("valuation_data", {}) if "Snowflake Agent" in agents_to_use else None,
+                        "web_output": data.get("web_output", {}) if "Web Search Agent" in agents_to_use else None
                     })
-                    
                     st.rerun()
                 else:
                     st.error(f"❌ API Error: {response.status_code} - {response.text}")
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
 
-    # ----------------------------
-    # Detailed Results (Tabs)
-    # ----------------------------
-    # Check if we have an assistant message with final_report, rag_output, snowflake_data
-    assistant_msgs = [
-        msg for msg in st.session_state.chat_history
-        if msg["role"] == "assistant"
-    ]
+    # ---------------------------- Detailed Results (Tabs) ----------------------------
+    assistant_msgs = [msg for msg in st.session_state.chat_history if msg["role"] == "assistant"]
     if assistant_msgs:
-        latest_assistant_msg = assistant_msgs[-1]  # The most recent one
+        latest_assistant_msg = assistant_msgs[-1]
         final_report = latest_assistant_msg.get("content", "")
         rag_output = latest_assistant_msg.get("rag_output", {})
         snowflake_data = latest_assistant_msg.get("snowflake_data", {})
-
-        # Create tabs for better organization
         st.markdown("---")
         st.subheader("Detailed Results")
-        tabs = st.tabs(["Overview", "Sources & Web Results", "Financial Visualization"])
+        tabs_to_show = []
+        if use_all_agents or len(selected_agents) == len(available_agents):
+            tabs_to_show = ["Overview", "Sources & Web Results", "Financial Visualization"]
+        else:
+            if "Snowflake Agent" in selected_agents:
+                tabs_to_show.append("Financial Visualization")
+            if "RAG Agent" in selected_agents or "Web Search Agent" in selected_agents:
+                tabs_to_show.append("Sources & Web Results")
+            if not tabs_to_show:
+                tabs_to_show = ["Overview"]
+        tabs = st.tabs(tabs_to_show)
+        if "Overview" in tabs_to_show:
+            with tabs[tabs_to_show.index("Overview")]:
+                st.markdown(latest_assistant_msg.get("content", ""), unsafe_allow_html=True)
+        if "Sources & Web Results" in tabs_to_show:
+            with tabs[tabs_to_show.index("Sources & Web Results")]:
+                if st.session_state.agent_type in ["All Agents", "RAG Agent"]:
+                    st.markdown("### Document Analysis")
+                    if isinstance(rag_output, dict):
+                        st.markdown(rag_output.get("result", "No RAG data available"))
+                if st.session_state.agent_type in ["All Agents", "Web Search Agent"]:
+                    st.markdown("### Web Search Results")
+                    web_output = latest_assistant_msg.get("web_output", "No web search data available")
+                    st.markdown(web_output)
+        if "Financial Visualization" in tabs_to_show:
+            with tabs[tabs_to_show.index("Financial Visualization")]:
+                st.markdown("### NVIDIA Financial Metrics Visualization")
+                
+                # Display the stacked area chart generated by Snowflake Agent
+                chart_file_path = "nvidia_stacked_area_chart.png"  # Ensure this path is correct
+                try:
+                    st.image(
+                        chart_file_path,
+                        caption="NVIDIA Metrics Over Time (Stacked Area Chart)",
+                        use_column_width=True
+                    )
+                except FileNotFoundError:
+                    st.error("❌ The visualization chart file could not be found. Please ensure it is generated correctly.")
 
-        # 1) Overview tab: Show final report text (markdown)
-        with tabs[0]:
-            st.markdown(final_report, unsafe_allow_html=True)
-
-        # 2) Sources & Web Results: If you want to show RAG or web data
-        with tabs[1]:
-            st.markdown("### Web / Document Analysis")
-            # If RAG has some text
-            if isinstance(rag_output, dict):
-                rag_text = rag_output.get("result", "No RAG data available")
-                st.markdown(rag_text)
-            else:
-                st.markdown("No RAG data to display.")
-
-        # 3) Financial Visualization tab: Show Snowflake chart
-        with tabs[2]:
-            st.markdown("### Financial Visualization from Snowflake")
-            if "chart" in snowflake_data:
-                chart_data = snowflake_data["chart"]
-                st.image(
-                    f"data:image/png;base64,{chart_data}",
-                    caption="NVIDIA Financial Metrics"
-                )
-            else:
-                st.write("No chart available.")
-            
-            # If you have additional metrics to display
-            if "metrics" in snowflake_data:
-                st.markdown("#### Key Metrics")
-                # If it’s a list of dicts, we can show it as a dataframe
-                if isinstance(snowflake_data["metrics"], list):
-                    st.dataframe(snowflake_data["metrics"])
+                # Display additional metrics if available
+                snowflake_data = latest_assistant_msg.get("snowflake_data", {})
+                if snowflake_data:
+                    if "metrics" in snowflake_data:
+                        st.markdown("#### Key Metrics")
+                        if isinstance(snowflake_data["metrics"], list):
+                            st.dataframe(snowflake_data["metrics"])
+                        else:
+                            st.write(snowflake_data["metrics"])
+                    else:
+                        st.info("ℹ️ No additional metrics available from the Snowflake Agent.")
                 else:
-                    st.write(snowflake_data["metrics"])
+                    st.warning("⚠️ No data received from the Snowflake Agent.")
 
 # --------------------------------
 # About Page
@@ -406,5 +522,5 @@ elif page == "About":
     - Configure whether you want all quarters or specific quarters in the sidebar.
     - Enter your question at the bottom, then click the circular button to submit.
     
-    **Developed by:** Your Team Name
+    **Developed by:** Team Name 4
     """)

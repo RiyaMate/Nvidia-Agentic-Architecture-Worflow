@@ -5,7 +5,7 @@ from serpapi import GoogleSearch
 from langchain.tools import Tool
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 def search_quarterly(year: int = None, quarter: int = None) -> str:
     """Search for NVIDIA quarterly report information online."""
