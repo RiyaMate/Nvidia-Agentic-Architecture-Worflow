@@ -1,12 +1,11 @@
 import streamlit as st
 import requests
 import json
-import base64
 import toml
 
-# -------------------------------------
-# 1) Set Page Config for Wide Layout
-# -------------------------------------
+# -------------------------------
+# 1) Page Config for Wide Layout
+# -------------------------------
 st.set_page_config(
     page_title="NVIDIA Research Assistant",
     layout="wide",
@@ -14,133 +13,138 @@ st.set_page_config(
 )
 
 # -------------------------------
-# Configuration
+# 2) Configuration
 # -------------------------------
 config = toml.load("config.toml")
 API_URL = config["fastapi_url"]
 QUERY_URL = f"{API_URL}/research_report"
 
 # -------------------------------
-# Sidebar Navigation
+# 3) Helper Functions
+# -------------------------------
+def display_financial_data(data):
+    """Display Snowflake financial metrics and chart."""
+    if not data:
+        st.info("No financial data available")
+        return
+
+    st.markdown("### NVIDIA Financial Metrics")
+    if "chart" in data:
+        st.image(
+            f"data:image/png;base64,{data['chart']}",
+            caption="NVIDIA Valuation Metrics",
+            use_column_width=True
+        )
+    if "metrics" in data:
+        st.markdown("#### Key Metrics")
+        if isinstance(data["metrics"], list):
+            st.dataframe(data["metrics"])
+        else:
+            st.write(data["metrics"])
+
+
+def display_rag_results(data):
+    """Display results from the RAG Agent."""
+    if not data:
+        st.info("No document analysis available")
+        return
+
+    st.markdown("### Document Analysis Results")
+    st.markdown(data.get("result", "No results found"))
+
+    if "sources" in data:
+        with st.expander("📚 Source Documents"):
+            for src in data["sources"]:
+                st.markdown(f"- {src}")
+
+
+def display_web_results(data):
+    """Display results from the Web Search Agent."""
+    if not data:
+        st.info("No web search results available")
+        return
+
+    st.markdown("### Web Search Results")
+    st.markdown(data)
+
+# -------------------------------
+# 4) Sidebar Configuration
 # -------------------------------
 st.sidebar.title("NVIDIA Research Assistant")
-
-# Search Type and Agent Selection
 st.sidebar.markdown("### Search Configuration")
 
-# Update the search type radio button
 search_type = st.sidebar.radio(
     "Select Search Type",
-    options=["All Quarters", "Specific Quarter"],
+    ["All Quarters", "Specific Quarter"],
     key="search_type"
 )
 
+# Keep user’s selected periods in session
+if "selected_periods" not in st.session_state:
+    st.session_state.selected_periods = ["2023q1"]
+
 if search_type == "Specific Quarter":
-    # Generate all year-quarter combinations from 2020q1 to 2025q4
-    quarter_options = [
-        f"{year}q{quarter}" for year in range(2020, 2026)
-        for quarter in range(1, 5)
+    all_periods = [f"{y}q{q}" for y in range(2020, 2026) for q in range(1, 5)]
+    # 1) Filter out "all" from the default to avoid the Streamlit error
+    default_selected = [
+        p for p in st.session_state.selected_periods
+        if p in all_periods
     ]
+    if not default_selected:
+        default_selected = ["2023q1"]  # Some safe default
+
     selected_periods = st.sidebar.multiselect(
         "Select Period(s)",
-        options=quarter_options,
-        default=["2023q1"],
+        options=all_periods,
+        default=default_selected,  # Use the filtered list
         key="period_select"
     )
+
     if not selected_periods:
         selected_periods = ["2023q1"]
-    # Keep these in session_state for later usage
-    st.session_state.year_slider = selected_periods[0].split('q')[0]
-    st.session_state.quarter_slider = selected_periods[0].split('q')[1]
+    st.session_state.selected_periods = selected_periods
+
 else:
-    st.session_state.year_slider = "all"
-    st.session_state.quarter_slider = "all"
-    st.session_state.period_select = ["all"]
+    selected_periods = ["all"]
+    st.session_state.selected_periods = selected_periods
 
-# Add spacing in sidebar
+
 st.sidebar.markdown("---")
-
-# Add Agent Selection after periods
 st.sidebar.markdown("### Agent Configuration")
 
-# multiselect for agents
-available_agents = ["Snowflake Agent", "RAG Agent", "Web Search Agent"]
+if "selected_agents" not in st.session_state:
+    st.session_state.selected_agents = ["RAG Agent"]
+
+available_agents = ["RAG Agent", "Web Search Agent", "Snowflake Agent"]
 selected_agents = st.sidebar.multiselect(
-    "Select AI Agents",
+    "Select AI Agents (at least one required)",
     options=available_agents,
-    default=available_agents,  # By default, select all agents
-    key="agent_type"
+    default=st.session_state.selected_agents,
+    key="agent_select_unique"
 )
 
-# Add an "All Agents" checkbox
-use_all_agents = st.sidebar.checkbox(
-    "Use All Agents",
-    value=True,
-    key="use_all_agents"
-)
+# Validate agent selection
+if not selected_agents:
+    st.sidebar.warning("⚠️ At least one agent is required")
+    selected_agents = ["RAG Agent"]
+st.session_state.selected_agents = selected_agents.copy()
 
-# Add a submit button for agent selection
-agent_submitted = st.sidebar.button(
-    "Apply Agent Selection",
-    type="primary",
-    use_container_width=True,
-    key="apply_agents"
-)
+if st.sidebar.button("Apply Agent Selection", type="primary", use_container_width=True, key="apply_agents_unique"):
+    st.session_state.selected_agents = selected_agents.copy()
+    st.sidebar.success("✅ Agent selection updated!")
 
-# Update the agent_type based on selection when submitted
-if agent_submitted:
-    if use_all_agents:
-        st.session_state.agent_type = "All Agents"
-    else:
-        if not selected_agents:  # If no agents selected, default to all
-            st.session_state.agent_type = "All Agents"
-        elif len(selected_agents) == len(available_agents):  # If all agents selected
-            st.session_state.agent_type = "All Agents"
-        else:
-            st.session_state.agent_type = selected_agents
-    st.sidebar.success("Agent selection updated!")
-
-# Add spacing in sidebar
-st.sidebar.markdown("---")
-
-# Initialize session state for navigation if not set
-if 'current_page' not in st.session_state:
+# -------------------------------
+# 5) Navigation
+# -------------------------------
+if "current_page" not in st.session_state:
     st.session_state.current_page = "Home"
-
-if 'chat_history' not in st.session_state:
+if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Navigation Buttons - Updated styling
-nav_col1, nav_col2, nav_col3 = st.sidebar.columns(3)
+home_btn = st.sidebar.button("Home", key="nav_Home", use_container_width=True)
+report_btn = st.sidebar.button("Combined Report", key="nav_Report", use_container_width=True)
+about_btn = st.sidebar.button("About", key="nav_About", use_container_width=True)
 
-with nav_col1:
-    home_btn = st.button(
-        "Home",
-        key="nav_Home",
-        type="primary" if st.session_state.current_page == "Home" else "secondary",
-        use_container_width=True,
-        disabled=False  # Enable the button
-    )
-
-with nav_col2:
-    report_btn = st.button(
-        "Report",
-        key="nav_Report",
-        type="primary" if st.session_state.current_page == "Combined Report" else "secondary",
-        use_container_width=True,
-        disabled=False  # Enable the button
-    )
-
-with nav_col3:
-    about_btn = st.button(
-        "About",
-        key="nav_About",
-        type="primary" if st.session_state.current_page == "Combined Report" else "secondary",
-        use_container_width=True,
-        disabled=False  # Enable the button
-    )
-
-# Handle navigation button clicks
 if home_btn:
     st.session_state.current_page = "Home"
     st.rerun()
@@ -151,12 +155,141 @@ elif about_btn:
     st.session_state.current_page = "About"
     st.rerun()
 
-# Current page
 page = st.session_state.current_page
 
-# ------------------------------------
-# Custom CSS for NVIDIA-inspired Theme
-# ------------------------------------
+# -------------------------------
+# 6) Page Layout
+# -------------------------------
+if page == "Home":
+    st.title("Welcome to the NVIDIA Multi-Agent Research Assistant")
+    st.markdown("""
+        This application integrates multiple agents to produce comprehensive research reports on NVIDIA:
+        - **RAG Agent**: Retrieves historical quarterly reports from Pinecone.
+        - **Web Search Agent**: Provides real-time insights via SerpAPI.
+        - **Snowflake Agent**: Queries structured valuation metrics and displays charts.
+    """)
+
+elif page == "Combined Report":
+    st.title("NVIDIA Research Assistant")
+    st.subheader("💬 Research History")
+
+    # Show chat history
+    with st.container():
+        for message in st.session_state.chat_history:
+            if message["role"] == "user":
+                periods_text = ", ".join(message.get("selected_periods", []))
+                agents_text = ", ".join(message.get("agents", []))
+                st.markdown(f"""
+                    <div class='user-message'>
+                        <div class='metadata'>📅 {periods_text}<br>🤖 Agents: {agents_text}</div>
+                        <div>🔍 {message['content']}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                    <div class='assistant-message'>
+                        <div class='metadata'>🤖 NVIDIA Research Assistant</div>
+                        <div>{message['content']}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    with st.form("report_form", clear_on_submit=True):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            question = st.text_input("Research Question", placeholder="What has driven NVIDIA's revenue growth?")
+        with col2:
+            submitted = st.form_submit_button("➤")
+
+    if submitted and question:
+        with st.spinner("🔄 Generating report..."):
+            payload = {
+                "question": question,
+                "search_type": search_type,
+                "selected_periods": selected_periods,
+                "agents": selected_agents
+            }
+            try:
+                response = requests.post(QUERY_URL, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    # Add user message
+                    st.session_state.chat_history.append({
+                        "role": "user",
+                        "content": question,
+                        "search_type": search_type,
+                        "selected_periods": selected_periods,
+                        "agents": selected_agents
+                    })
+                    # Add assistant message
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": data.get("final_report", ""),
+                        "rag_output": data.get("rag_output"),
+                        "snowflake_data": data.get("valuation_data"),
+                        "web_output": data.get("web_output"),
+                        "agents": selected_agents
+                    })
+                    st.rerun()
+                else:
+                    st.error(f"❌ API Error: {response.status_code} - {response.text}")
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+
+    # Show results in tabs
+    if st.session_state.chat_history:
+        latest = next((msg for msg in reversed(st.session_state.chat_history) if msg["role"] == "assistant"), None)
+        if latest:
+            st.markdown("---")
+            st.subheader("📊 Detailed Results")
+
+            # Tabs based on which agents are active
+            tabs_to_show = ["Overview"]
+            if "Snowflake Agent" in selected_agents:
+                tabs_to_show.append("Financial Data")
+            if "RAG Agent" in selected_agents:
+                tabs_to_show.append("Document Analysis")
+            if "Web Search Agent" in selected_agents:
+                tabs_to_show.append("Web Results")
+
+            tab_objects = st.tabs(tabs_to_show)
+
+            for i, tab_name in enumerate(tabs_to_show):
+                with tab_objects[i]:
+                    if tab_name == "Overview":
+                        st.markdown(latest["content"])
+                    elif tab_name == "Financial Data":
+                        display_financial_data(latest.get("snowflake_data"))
+                    elif tab_name == "Document Analysis":
+                        # If we have a summarized version from the agent node, show that:
+                        rag_summary = latest.get("rag_summary", None)
+                        if rag_summary:
+                            st.markdown("#### Summarized Historical Insights")
+                            st.write(rag_summary)
+                        else:
+                            # fallback to raw chunks if summary not available
+                            display_rag_results(latest.get("rag_output"))
+                    elif tab_name == "Web Results":
+                        web_summary = latest.get("web_summary", None)
+                        if web_summary and web_summary != "No web data to summarize.":
+                            st.markdown("### Web Summary")
+                            st.write(web_summary)
+                        else:
+                            # fallback to the raw chunk
+                            display_web_results(latest.get("web_output"))
+
+elif page == "About":
+    st.title("About NVIDIA Research Assistant")
+    st.markdown("""
+        **NVIDIA Multi-Agent Research Assistant** integrates:
+        - **RAG Agent**: Uses Pinecone with metadata filtering to retrieve historical reports.
+        - **Web Search Agent**: Uses SerpAPI for real-time search.
+        - **Snowflake Agent**: Connects to Snowflake for valuation measures and charts.
+    """)
+
+# -------------------------------
+# 7) Custom CSS (UNCHANGED)
+# -------------------------------
 st.markdown("""
 <style>
 /* ---------------------------------- */
@@ -286,7 +419,7 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
     color: #fff !important; /* White text */
 }
 [data-testid="stSidebar"] .stRadio > div:hover {
-    background-color: #333333 !important; 
+    background-color: #333333 !important;
 }
 
 /* -------------------------------------- */
@@ -294,7 +427,7 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
 /* -------------------------------------- */
 [data-testid="stSidebar"] .stButton > button {
     background-color: #0a8006 !important; /* NVIDIA green */
-    color: #fff !important;               /* white text */
+    color: #fff !important;
     border: none !important;
 }
 [data-testid="stSidebar"] .stButton > button:hover {
@@ -330,197 +463,4 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
     margin: 0 !important;
 }
 </style>
-
-
 """, unsafe_allow_html=True)
-
-# --------------------------------
-# Home Page
-# --------------------------------
-if page == "Home":
-    st.title("Welcome to the NVIDIA Multi-Agent Research Assistant")
-    st.markdown("""
-    This application integrates multiple agents to produce comprehensive research reports on NVIDIA:
-    
-    - **RAG Agent:** Retrieves historical quarterly reports from Pinecone (Year/Quarter).
-    - **Web Search Agent:** Provides real-time insights via SerpAPI.
-    - **Snowflake Agent:** Queries structured valuation metrics from Snowflake and displays charts.
-    
-    Use the navigation panel to generate a combined research report or learn more about the application.
-    """)
-
-# --------------------------------
-# Combined Research Report
-# --------------------------------
-elif page == "Combined Report":
-    st.title("NVIDIA Research Assistant")
-
-    # Container for Chat History
-    st.subheader("Research History")
-    chat_container = st.container()
-    with chat_container:
-        st.write("Below are your previous queries and the assistant's responses.")
-        st.write("You can scroll to see older messages.")
-        st.markdown("""---""")
-        # Display chat history
-        if st.session_state.chat_history:
-            for message in st.session_state.chat_history:
-                if message["role"] == "user":
-                    # Show user message
-                    periods_text = "All Quarters" if message.get('search_type') == "All Quarters" else ", ".join(message.get('selected_periods', []))
-                    st.markdown(f"""
-                    <div class="user-message">
-                        <div class="metadata">📅 {periods_text}</div>
-                        <div>🔍 {message['content']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    # Show assistant message
-                    st.markdown(f"""
-                    <div class="assistant-message">
-                        <div class="metadata">🤖 NVIDIA Research Assistant</div>
-                        <div>{message["content"]}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-    # ----------- Input form -----------
-    st.markdown("---")
-    with st.form(key="report_form", clear_on_submit=True):
-        question = st.text_input(
-            "Research Question",
-            placeholder="What has driven NVIDIA's revenue growth in recent quarters?",
-            key="question_input"
-        )
-        st_type = st.session_state.search_type
-        selected_periods = (
-            st.session_state.get("period_select", ["2023q1"])
-            if st_type == "Specific Quarter"
-            else ["all"]
-        )
-        submitted = st.form_submit_button("➤", use_container_width=True)
-
-    # ----------- On Submit -----------
-    if submitted and question:
-        with st.spinner("🤖 Generating comprehensive NVIDIA analysis..."):
-            agents_to_use = ["All Agents"] if use_all_agents else selected_agents
-            payload = {
-                "question": question,
-                "search_type": st_type,
-                "selected_periods": selected_periods,
-                "agents": agents_to_use
-            }
-            try:
-                response = requests.post(QUERY_URL, json=payload)
-                if response.status_code == 200:
-                    data = response.json()
-                    st.session_state.chat_history.append({
-                        "role": "user",
-                        "content": question,
-                        "search_type": st_type,
-                        "selected_periods": selected_periods,
-                        "agents": agents_to_use
-                    })
-                    if "Snowflake Agent" in agents_to_use:
-                        content = data.get("valuation_data", {}).get("summary", "No Snowflake data available")
-                    elif "RAG Agent" in agents_to_use:
-                        content = data.get("rag_output", {}).get("result", "No RAG data available")
-                    elif "Web Search Agent" in agents_to_use:
-                        content = data.get("web_output", "No web search data available")
-                    else:
-                        content = data.get("final_report", "No report generated")
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": content,
-                        "agents": agents_to_use,
-                        "rag_output": data.get("rag_output", {}) if "RAG Agent" in agents_to_use else None,
-                        "snowflake_data": data.get("valuation_data", {}) if "Snowflake Agent" in agents_to_use else None,
-                        "web_output": data.get("web_output", {}) if "Web Search Agent" in agents_to_use else None
-                    })
-                    st.rerun()
-                else:
-                    st.error(f"❌ API Error: {response.status_code} - {response.text}")
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-
-    # ---------------------------- Detailed Results (Tabs) ----------------------------
-    assistant_msgs = [msg for msg in st.session_state.chat_history if msg["role"] == "assistant"]
-    if assistant_msgs:
-        latest_assistant_msg = assistant_msgs[-1]
-        final_report = latest_assistant_msg.get("content", "")
-        rag_output = latest_assistant_msg.get("rag_output", {})
-        snowflake_data = latest_assistant_msg.get("snowflake_data", {})
-        st.markdown("---")
-        st.subheader("Detailed Results")
-        tabs_to_show = []
-        if use_all_agents or len(selected_agents) == len(available_agents):
-            tabs_to_show = ["Overview", "Sources & Web Results", "Financial Visualization"]
-        else:
-            if "Snowflake Agent" in selected_agents:
-                tabs_to_show.append("Financial Visualization")
-            if "RAG Agent" in selected_agents or "Web Search Agent" in selected_agents:
-                tabs_to_show.append("Sources & Web Results")
-            if not tabs_to_show:
-                tabs_to_show = ["Overview"]
-        tabs = st.tabs(tabs_to_show)
-        if "Overview" in tabs_to_show:
-            with tabs[tabs_to_show.index("Overview")]:
-                st.markdown(latest_assistant_msg.get("content", ""), unsafe_allow_html=True)
-        if "Sources & Web Results" in tabs_to_show:
-            with tabs[tabs_to_show.index("Sources & Web Results")]:
-                if st.session_state.agent_type in ["All Agents", "RAG Agent"]:
-                    st.markdown("### Document Analysis")
-                    if isinstance(rag_output, dict):
-                        st.markdown(rag_output.get("result", "No RAG data available"))
-                if st.session_state.agent_type in ["All Agents", "Web Search Agent"]:
-                    st.markdown("### Web Search Results")
-                    web_output = latest_assistant_msg.get("web_output", "No web search data available")
-                    st.markdown(web_output)
-        if "Financial Visualization" in tabs_to_show:
-            with tabs[tabs_to_show.index("Financial Visualization")]:
-                st.markdown("### NVIDIA Financial Metrics Visualization")
-                
-                # Display the stacked area chart generated by Snowflake Agent
-                chart_file_path = "nvidia_stacked_area_chart.png"  # Ensure this path is correct
-                try:
-                    st.image(
-                        chart_file_path,
-                        caption="NVIDIA Metrics Over Time (Stacked Area Chart)",
-                        use_column_width=True
-                    )
-                except FileNotFoundError:
-                    st.error("❌ The visualization chart file could not be found. Please ensure it is generated correctly.")
-
-                # Display additional metrics if available
-                snowflake_data = latest_assistant_msg.get("snowflake_data", {})
-                if snowflake_data:
-                    if "metrics" in snowflake_data:
-                        st.markdown("#### Key Metrics")
-                        if isinstance(snowflake_data["metrics"], list):
-                            st.dataframe(snowflake_data["metrics"])
-                        else:
-                            st.write(snowflake_data["metrics"])
-                    else:
-                        st.info("ℹ️ No additional metrics available from the Snowflake Agent.")
-                else:
-                    st.warning("⚠️ No data received from the Snowflake Agent.")
-
-# --------------------------------
-# About Page
-# --------------------------------
-elif page == "About":
-    st.title("About NVIDIA Research Assistant")
-    st.markdown("""
-    **NVIDIA Multi-Agent Research Assistant** integrates:
-    
-    - **RAG Agent:** Uses Pinecone (index: `nvidia-reports`) with metadata filtering 
-      (e.g., `2023q2`, `2024q1`) for historical quarterly reports.
-    - **Web Search Agent:** Uses SerpAPI for real-time web search related to NVIDIA.
-    - **Snowflake Agent:** Connects to Snowflake to query structured NVIDIA valuation measures and displays visual charts.
-    
-    **Usage Instructions:**
-    - Go to the **Combined Report** page to generate a comprehensive research report.
-    - Configure whether you want all quarters or specific quarters in the sidebar.
-    - Enter your question at the bottom, then click the circular button to submit.
-    
-    **Developed by:** Team Name 4
-    """)
