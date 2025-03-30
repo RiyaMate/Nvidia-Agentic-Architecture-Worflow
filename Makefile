@@ -94,7 +94,7 @@ streamlitdeploy:
 
 
 # SerAPI Web API
-NvidiaWebAgent:
+websearch:
 	@echo "Running NVIDIA Web Search Agent..."
 	poetry run python agents/websearch_agent.py
 

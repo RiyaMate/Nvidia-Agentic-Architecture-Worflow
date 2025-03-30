@@ -3,8 +3,13 @@ from langchain_core.tools import tool
 import boto3
 import json
 from sentence_transformers import CrossEncoder
-from typing import List, Dict
+from typing import List, Dict, Any, Union
 from pinecone import Pinecone
+from PIL import Image
+import time
+import base64
+from io import BytesIO
+import re
 import os
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
@@ -21,6 +26,31 @@ cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index = pc.Index(os.getenv("PINECONE_INDEX_NAME", "nvidia-reports"))
+
+def clean_base64_images(text: Any) -> str:
+    """
+    Remove base64 encoded images from text for cleaner content.
+    
+    Args:
+        text: Text containing base64 encoded images
+    
+    Returns:
+        Cleaned text with base64 image data removed
+    """
+    # Check if text is a string
+    if not isinstance(text, str):
+        return str(text) if text is not None else ""
+        
+    if not text:
+        return ""
+    
+    # Pattern to find markdown image syntax with base64 data
+    pattern = r'(?:!\[.*?\]|\[Image.*?\])\(data:image\/[^;]+;base64,[^)]+\)'
+    
+    # Replace base64 images with a placeholder
+    cleaned_text = re.sub(pattern, '[IMAGE REMOVED]', text)
+    
+    return cleaned_text
 
 def get_content_from_s3(json_source: str) -> Dict:
     """Retrieve content from S3 bucket"""
@@ -55,6 +85,7 @@ def rerank_results(query: str, results: List[Dict], top_k: int = 5) -> List[Dict
 
 def format_rag_contexts(matches: List[Dict]) -> str:
     contexts = []
+    
     for x in matches:
         # Get full content from S3 if available
         if 'json_source' in x['metadata']:
@@ -62,16 +93,24 @@ def format_rag_contexts(matches: List[Dict]) -> str:
             chunk_content = full_content.get(x['metadata']['chunk_id'], '')
         else:
             chunk_content = x['metadata'].get('text_preview', '')
-
+        
+        # Ensure chunk_content is a string and clean base64 images
+        if not isinstance(chunk_content, str):
+            chunk_content = str(chunk_content) if chunk_content is not None else ""
+        
+        # Clean base64 images from the content
+        cleaned_content = clean_base64_images(chunk_content)
+        
         text = (
             f"File Name: {x['metadata']['file_name']}\n"
             f"Year: {x['metadata']['year']}\n"
             f"Quarter: {x['metadata']['quarter']}\n"
-            f"Content: {chunk_content}\n"
+            f"Content: {cleaned_content}\n"
             f"Source: {x['metadata']['source']}\n"
             f"Relevance Score: {x['score']:.3f}\n"
         )
         contexts.append(text)
+    
     return "\n---\n".join(contexts)
 
 @tool("search_all_namespaces")
@@ -98,7 +137,6 @@ def search_all_namespaces(query: str, alpha: float = 0.5):
                 alpha=alpha,
             )
             if xc["matches"]:
-                
                 results.extend(xc["matches"])
             else:
                 logging.info(f"No results found in namespace {namespace}.")
@@ -121,7 +159,7 @@ def search_specific_quarter(input_dict: Dict) -> str:
     Args:
         input_dict: Dictionary containing query and selected periods
     """
-    if isinstance(input_dict,str) and "input_dict" in input_dict:
+    if isinstance(input_dict, str) and "input_dict" in input_dict:
         input_dict = json.loads(input_dict)
     query = input_dict.get("query")
     selected_periods = input_dict.get("selected_periods", ["2023q1"]) 
@@ -152,35 +190,31 @@ def search_specific_quarter(input_dict: Dict) -> str:
         results = rerank_results(query, results)
         return format_rag_contexts(results)
     return "No results found in selected quarters."
-    
-# ...existing code...
 
+    
 if __name__ == "__main__":
- 
-    # Test search_all_namespaces
-    # query = "NVIDIA financial performance"
-    # result = search_all_namespaces.invoke(query)
-    # if result:
-    #     print("\n=== Search Results ===")
-    #     print(result)
-    # else:
-    #     print("No results found")
+    # Test search_all_namespaces with image extraction
+    query = "NVIDIA GPU architecture diagrams"
+    result = search_all_namespaces.invoke(query)
+    if result:
+        print("\n=== Search Results with Images ===")
+        print(result)
+    else:
+        print("No results found")
         
     # Test searching across multiple periods
-    test_query = "NVIDIA revenue growth"
+    test_query = "NVIDIA revenue growth charts"
     # Define multiple periods to search across
     test_periods = ["2023q1", "2023q2", "2024q1"]
     
-    # Fix: Properly structure the input dictionary
-    input_dict = {
-        "input_dict": {  # Add this outer key to match the tool's expected format
-            "query": test_query,
-            "selected_periods": test_periods
-        }
-    }
+# Fix: Properly structure the input dictionary
+
+    # input_dict = {"input_dict" : {
+    #     "query": test_query,
+    #     "selected_periods": test_periods
+    # }}
     
-    specific_result = search_specific_quarter.invoke(input_dict)
+    # specific_result = search_specific_quarter.invoke(input_dict)
     
-    print("\n=== Multiple Quarter Results ===")
-    print(specific_result)
-        
+    # print("\n=== Multiple Quarter Results with Images ===")
+    # print(specific_result)
