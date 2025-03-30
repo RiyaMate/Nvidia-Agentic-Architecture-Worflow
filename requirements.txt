@@ -20,4 +20,5 @@ pyarrow<19.0.0
 boto3
 bs4
 sqlachemy
+yahooquery
 snowflake-sqlalchemy
