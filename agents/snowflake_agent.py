@@ -66,7 +66,7 @@ def get_valuation_summary(query:str=None) -> dict:
             "error": str(e),
             "status": "failed"
         }
-def get_graph_specs_from_llm(data: pd.DataFrame) -> dict:
+def get_graph_specs_from_llm(data: pd.DataFrame,model_name:str) -> dict:
     """Get graph specifications from LLM based on the Snowflake data."""
     try:
         # Convert DataFrame to a JSON-like string for LLM input
@@ -84,7 +84,7 @@ def get_graph_specs_from_llm(data: pd.DataFrame) -> dict:
 
         Focus on making the graph visually informative and easy to interpret.
         """
-        
+        llm = initialize_llm(model_name)
         # Send the prompt to the LLM
         response = llm.invoke(prompt)
         if not response or not hasattr(response, "content"):
@@ -191,7 +191,7 @@ def create_graph_from_llm_specs(data: pd.DataFrame, specs: dict) -> str:
     except Exception as e:
         print(f"Error creating graph: {str(e)}")
         return None
-def get_valuation_summary_with_llm_graph() -> dict:
+def get_valuation_summary_with_llm_graph(model_name:str = "claude-3-haiku-20240307") -> dict:
     """Get NVIDIA valuation metrics and generate a graph using LLM."""
     try:
         # Fetch data from Snowflake
@@ -199,10 +199,6 @@ def get_valuation_summary_with_llm_graph() -> dict:
         
         # Normalize column names
         df.columns = df.columns.str.upper().str.strip()
-
-        # Debugging
-        print("DEBUG: Normalized DataFrame columns:", df.columns)
-        print("DEBUG: First few rows of the DataFrame:\n", df.head())
         
         if df.empty:
             raise ValueError("No data returned from Snowflake. Ensure the table contains data.")
@@ -216,7 +212,7 @@ def get_valuation_summary_with_llm_graph() -> dict:
             raise ValueError("The 'DATE' column is missing from the data.")
         
         # Get graph specifications from LLM
-        graph_specs = get_graph_specs_from_llm(df)
+        graph_specs = get_graph_specs_from_llm(df,model_name)
         if not graph_specs:
             print("LLM failed to generate graph specifications. Using default graph settings.")
             graph_specs = {
@@ -245,17 +241,55 @@ def get_valuation_summary_with_llm_graph() -> dict:
             "error": str(e),
             "status": "failed"
         }
+
+def initialize_llm(model_name="claude-3-haiku-20240307"):
+    """Initialize LLM based on model name."""
+    # Initialize the appropriate LLM based on the model name
+    if "claude" in model_name:
+        llm = ChatAnthropic(
+            model=model_name,
+            temperature=0,
+            anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')
+        )
+    elif "gemini" in model_name:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        llm = ChatGoogleGenerativeAI(
+            model=model_name,
+            temperature=0,
+            google_api_key=os.environ.get('GEMINI_API_KEY')
+        )
+    elif "deepseek" in model_name:
+        from langchain_openai import ChatOpenAI
+        llm = ChatOpenAI(
+            model=model_name,
+            temperature=0,
+            api_key=os.environ.get('DEEP_SEEK_API_KEY')
+        )
+    elif "grok" in model_name:
+        from langchain_groq import ChatGroq
+        llm = ChatGroq(
+            model=model_name,
+            temperature=0,
+            api_key=os.environ.get('GROK_API_KEY')
+        )
+    else:
+        llm = ChatAnthropic(
+            model="claude-3-haiku-20240307",
+            temperature=0,
+            anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')
+        )
+    return llm
  
-def get_ai_analysis_with_graph(prompt: str) -> str:
+def get_ai_analysis_with_graph(prompt: str, model_name: str = "claude-3-haiku-20240307"):
     """Get AI-generated analysis of NVIDIA metrics with LLM-generated graph."""
     try:
         # Get the valuation summary and graph
-        result = get_valuation_summary_with_llm_graph()
+        result = get_valuation_summary_with_llm_graph(model_name=model_name)
         if result["status"] == "failed":
-            return f"Error: {result['error']}"
+            return {"status": "failed", "error": result['error']}
         
         # Create a prompt for the LLM to analyze the data and graph
-        prompt = f"""
+        llm_prompt = f"""
         Analyze the following NVIDIA financial data and the generated graph:
         Data Summary:
         {result['summary']}
@@ -265,9 +299,9 @@ def get_ai_analysis_with_graph(prompt: str) -> str:
         
         Provide insights based on the data and the graph. Highlight key trends, patterns, and any significant observations.
         """
-        
+        llm = initialize_llm(model_name)
         # Get the analysis from the LLM
-        response = llm.invoke(prompt)
+        response = llm.invoke(llm_prompt)
         
         # Handle the AIMessage response correctly
         if hasattr(response, 'content'):
@@ -275,55 +309,32 @@ def get_ai_analysis_with_graph(prompt: str) -> str:
         else:
             analysis = str(response)
         
-        return f"""
-Analysis Results:
-----------------
-{analysis}
-Graph Path:
------------
-{result['chart_path']}
-"""
+        # Always ensure chart_path is included in the response
+        chart_path = result.get('chart_path', 'llm_generated_graph.png')
+        
+        # Make sure the chart file exists
+        if not os.path.exists(chart_path):
+            print(f"Warning: Chart path not found: {chart_path}")
+            # Try to use default location as fallback
+            if os.path.exists('llm_generated_graph.png'):
+                chart_path = 'llm_generated_graph.png'
+        
+        return {
+            "status": "success",
+            "analysis": analysis,
+            "chart_path": chart_path,  # Ensure chart path is included
+            "summary": result.get('summary', {}),
+            "graph_specs": result.get('graph_specs', "")
+        }
     except Exception as e:
         print(f"Error during AI analysis with graph: {str(e)}")
-        return "Analysis unavailable - Please try again later."
-# Create LangChain tool for the Snowflake agent
-snowflake_tool = Tool(
-    name="nvidia_financial_metrics",
-    description="Get NVIDIA financial valuation metrics from Snowflake",
-    func=get_valuation_summary
-)
+        return {"status": "failed", "error": f"Analysis unavailable - {str(e)}"} 
  
-llm = ChatAnthropic(
-    model="claude-3-haiku-20240307",  
-    temperature=0,
-    anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')  # Get from environment instead of hardcoding
-)
  
-try:
-    # Create agent with the tool
-    # Simplify agent initialization
-    agent = initialize_agent(
-        tools=[snowflake_tool],
-        llm=llm,
-        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,  # Add specific agent type
-        handle_parsing_errors=True,
-        max_iterations=2,  # Limit iterations to reduce token usage
-        early_stopping_method="generate"  # Add early stopping
-    )
-except Exception as e:
-    print(f"Error initializing agent: {str(e)}")
-    print("Available Claude models: claude-3-opus-20240229, claude-3-sonnet-20240229, claude-3-haiku-20240307")
-    raise
- 
-def get_ai_analysis(prompt: str) -> str:
-    """Get AI-generated analysis of NVIDIA metrics"""
-    try:
-        response = agent.invoke({"input": prompt})
-        return response.get("output", str(response))
-    except Exception as e:
-        print(f"Error during analysis: {str(e)}")
-        return "Analysis unavailable - Rate limit exceeded. Please try again later."  
  
 if __name__ == "__main__":
-    analysis = get_ai_analysis_with_graph("Analyze NVIDIA financial metrics using the nvidia_financial_metrics tool.Provide a brief summary of key insights.")
-    print(analysis)
+    analysis = get_ai_analysis_with_graph(
+        prompt="Analyze NVIDIA financial metrics using the nvidia_financial_metrics tool.Provide a brief summary of key insights.",
+        model_name="gemini-2.0-flash"
+    )
+    print(analysis["analysis"])

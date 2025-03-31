@@ -7,7 +7,6 @@ import sys
 import operator
 import traceback
 from typing import TypedDict, Dict, Any, List, Annotated
-
 # LangChain imports
 from langchain_core.agents import AgentAction
 from langchain_core.messages import BaseMessage
@@ -26,7 +25,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import agent functions
 from agents.websearch_agent import search_quarterly
 from agents.rag_agent import search_all_namespaces, search_specific_quarter
-from agents.snowflake_agent import query_snowflake, get_valuation_summary_with_llm_graph, get_ai_analysis_with_graph
+from agents.snowflake_agent import get_valuation_summary_with_llm_graph, get_ai_analysis_with_graph
 
 
 class NvidiaGPTState(TypedDict, total=False):
@@ -36,6 +35,8 @@ class NvidiaGPTState(TypedDict, total=False):
     search_type: str  # "All Quarters" or "Specific Quarter"
     selected_periods: List[str]  # List of quarters to analyze
     web_output: str  # Results from web search
+    web_links: List[str]  # Links from web search results
+    web_images: List[str]  # Image URLs from web search results
     rag_output: Dict[str, Any]  # Results from RAG search
     snowflake_output: Dict[str, Any]  # Results from Snowflake query
     valuation_data: Dict[str, Any]  # Financial visualization data
@@ -43,17 +44,8 @@ class NvidiaGPTState(TypedDict, total=False):
     intermediate_steps: Annotated[List[tuple[AgentAction, str]], operator.add]  # Agent reasoning steps
     assistant_response: str  # Agent's response
     final_report: Dict[str, Any]  # Final structured report
+    model: str  # Model name for LLM
 
-
-def final_report_tool(input_dict: Dict) -> Dict:
-    """Generates final report in structured format."""
-    return {
-        "introduction": input_dict.get("introduction", ""),
-        "key_findings": input_dict.get("key_findings", []),
-        "analysis": input_dict.get("analysis", ""),
-        "conclusion": input_dict.get("conclusion", ""),
-        "sources": input_dict.get("sources", [])
-    }
 
 
 def start_node(state: NvidiaGPTState) -> Dict:
@@ -69,23 +61,33 @@ def web_search_node(state: NvidiaGPTState) -> Dict:
             query=state.get("question"),
             selected_periods=state.get("selected_periods")
         )
-        return {"web_output": result}
+        if isinstance(result, dict):
+
+            return {"web_output": result.get("text", ""),
+                    "web_links": result.get("links", []),
+                    "web_images": result.get("images", [])
+                    }
     except Exception as e:
-        return {"web_output": f"Web search error: {str(e)}"}
+        return {"web_output": f"Web search error: {str(e)}"
+                }
 
 def rag_search_node(state: NvidiaGPTState) -> Dict:
     """Execute RAG search based on search type."""
     try:
+        # Extract model name from state
+        model_name = state.get("model")
+        
         if state.get("search_type") == "All Quarters":
-            # Search across all document namespaces
-            result = search_all_namespaces(state["question"])
+            # Search across all document namespaces with model_name
+            result = search_all_namespaces(state["question"], model_name=model_name)
             return {"rag_output": {"type": "all", "result": result}}
         else:
             # For specific quarters
             input_dict = {
                 "input_dict": {
                     "query": state["question"],
-                    "selected_periods": state.get("selected_periods", ["2023q1"])
+                    "selected_periods": state.get("selected_periods", ["2023q1"]),
+                    "model_name": model_name
                 }
             }
             result = search_specific_quarter.invoke(input_dict)
@@ -104,36 +106,67 @@ def snowflake_node(state: NvidiaGPTState) -> Dict:
     """Query Snowflake database for NVIDIA financial data with visualization."""
     try:
         # Get the user's original query
-        query = state.get("question", "Analyze NVIDIA financial metrics")
+        query = state.get("question")
+        model_name = state.get("model")
         
-        # Generate LLM-guided graph and analysis
-        result = get_valuation_summary_with_llm_graph()
+        print(f"Running Snowflake analysis with model: {model_name}")
         
-        if result["status"] == "failed":
-            return {"snowflake_output": {"error": result["error"], "status": "failed"}}
+        # Get AI analysis which includes valuation summary and visualization
+        result = get_ai_analysis_with_graph(query, model_name=model_name)
         
-        # Get AI analysis of the data with the generated graph
-        analysis = get_ai_analysis_with_graph(query)
-        
-        # Return structured output with graph path and analysis
-        return {
-            "snowflake_output": {
-                "data": result["summary"],
-                "graph_path": result["chart_path"],
-                "graph_specs": result["graph_specs"],
-                "analysis": analysis,
-                "status": "success"
-            },
-            "valuation_data": {
-                "chart_path": result["chart_path"],
-                "data": result["summary"]
+        # Handle result as dictionary or string
+        if isinstance(result, dict) and result.get("status") == "success":
+            # Ensure chart_path exists and is accessible
+            chart_path = result.get("chart_path", "")
+            
+            # Try to use default location if path is missing
+            if not chart_path or not os.path.exists(chart_path):
+                print(f"Warning: Chart path not found: {chart_path}")
+                if os.path.exists('llm_generated_graph.png'):
+                    chart_path = 'llm_generated_graph.png'
+                    result['chart_path'] = chart_path
+            
+            # Return full result object with separate chart path for easy access
+            return {
+                "snowflake_output": result,
+                "valuation_data": {
+                    "chart_path": chart_path,
+                    "data": result.get("summary", {})
+                }
             }
-        }
+        elif isinstance(result, str):
+            # If result is a string, it's likely an error message
+            print(f"Snowflake agent returned string: {result}")
+            return {
+                "snowflake_output": {
+                    "error": result,
+                    "status": "failed",
+                    "analysis": "Using RAG agent's financial analysis directly",  # Fallback
+                    "chart_path": "llm_generated_graph.png" if os.path.exists('llm_generated_graph.png') else ""
+                }
+            }
+        else:
+            # Handle other unexpected cases
+            print(f"Snowflake agent returned unexpected format: {type(result)}")
+            return {
+                "snowflake_output": {
+                    "error": "Invalid response format from Snowflake agent",
+                    "status": "failed",
+                    "analysis": "Using RAG agent's financial analysis directly",  # Fallback
+                    "chart_path": "llm_generated_graph.png" if os.path.exists('llm_generated_graph.png') else ""
+                }
+            }
     except Exception as e:
         print(f"Error in snowflake_node: {str(e)}")
-        return {"snowflake_output": {"error": str(e), "status": "failed"}}
+        return {
+            "snowflake_output": {
+                "error": str(e), 
+                "status": "failed",
+                "analysis": "Using RAG agent's financial analysis directly",  # Fallback
+                "chart_path": "llm_generated_graph.png" if os.path.exists('llm_generated_graph.png') else ""
+            }
+        }
     
-
 def agent_node(state: NvidiaGPTState, nvidia_gpt):
     """Execute NvidiaGPT agent with LLM, synthesizing data from all sources."""
     try:
@@ -142,34 +175,30 @@ def agent_node(state: NvidiaGPTState, nvidia_gpt):
         
         # Get data from all sources
         raw_web = state.get("web_output", "")
-        raw_rag = state.get("rag_output", {}).get("result", "")
+        web_images = state.get("web_images", [])
+        web_links = state.get("web_links", [])
+        
+        # Get RAG data
+        raw_rag_data = state.get("rag_output", {})
+        rag_insights = ""
+        
+        if isinstance(raw_rag_data, dict):
+            result = raw_rag_data.get("result", {})
+            if isinstance(result, dict):
+                rag_insights = result.get("insights", "")
+        
+        # Get Snowflake data
         snowflake_data = state.get("snowflake_output", {})
+        financial_analysis = ""
         
-        # Extract financial metrics from Snowflake
-        financial_metrics = ""
-        if isinstance(snowflake_data, dict) and snowflake_data.get("status") == "success":
-            financial_metrics = snowflake_data.get("analysis", "")
-            # Include path to chart if available
-            chart_path = state.get("valuation_data", {}).get("chart_path", "")
-            if chart_path:
-                financial_metrics += f"\n\nFinancial chart available at: {chart_path}"
-
-        # 1) Summarize Web Data (with focus on extracting image information)
+        if isinstance(snowflake_data, dict):
+            financial_analysis = snowflake_data.get("analysis", "")
+        
+        # Set defaults if no data available
         web_summary = "No web data available."
-        web_images = []
-        
         if raw_web:
-            # Extract image URLs from web search results
-            image_lines = []
-            image_section = False
-            for line in raw_web.split("\n"):
-                if "Image Search Results" in line:
-                    image_section = True
-                    continue
-                if image_section and "Thumbnail:" in line:
-                    img_url = line.split("Thumbnail:")[1].strip()
-                    web_images.append(img_url)
-                    image_lines.append(f"- Image: {img_url}")
+            if isinstance(raw_web, dict):
+                raw_web = raw_web.get("text", "")
             
             prompt_for_web = f"""
 You are analyzing NVIDIA's performance for: "{user_query}"
@@ -185,37 +214,15 @@ Please provide a concise summary (3-5 sentences) focusing on:
 
 Format your response as a clear summary without using bullet points.
 """
-            web_summary_result = nvidia_gpt.invoke({"input": prompt_for_web})
-            if isinstance(web_summary_result, dict) and "output" in web_summary_result:
-                web_summary = web_summary_result["output"]
-            else:
-                web_summary = str(web_summary_result)
+            web_summary_result = nvidia_gpt.invoke(prompt_for_web)
+            web_summary = web_summary_result.content if hasattr(web_summary_result, 'content') else str(web_summary_result)
 
-        # 2) Summarize RAG Data with focus on key financial metrics
+        # Get RAG summary
         rag_summary = "No historical data available."
+        if rag_insights:
+            rag_summary = rag_insights
         
-        if raw_rag:
-            prompt_for_rag = f"""
-You are analyzing NVIDIA's historical performance for: "{user_query}"
-
-Below is retrieved content from NVIDIA's official quarterly reports:
-
-{raw_rag}
-
-Please provide a concise summary focusing specifically on:
-1. Key financial metrics directly related to the user's query
-2. Revenue, profit margins, and growth rates by segment
-3. Year-over-year comparisons that help answer the user's question
-
-Focus on quantitative data and limit to 5-7 sentences.
-"""
-            rag_summary_result = nvidia_gpt.invoke({"input": prompt_for_rag})
-            if isinstance(rag_summary_result, dict) and "output" in rag_summary_result:
-                rag_summary = rag_summary_result["output"]
-            else:
-                rag_summary = str(rag_summary_result)
-
-        # 3) Combine Everything for Final Analysis
+        # Generate final comprehensive analysis
         combined_prompt = f"""
 USER QUERY: {user_query}
 
@@ -226,11 +233,11 @@ HISTORICAL REPORTS SUMMARY:
 {rag_summary}
 
 FINANCIAL ANALYSIS:
-{financial_metrics}
+{financial_analysis}
 
 AVAILABLE VISUALIZATIONS: {len(web_images)} images found in search results.
 
-Based on ALL the information above, please provide a comprehensive analysis of NVIDIA's performance 
+Based on ALL the information above, provide a comprehensive analysis of NVIDIA's performance 
 that directly addresses the user's query: "{user_query}"
 
 Your response must:
@@ -240,34 +247,32 @@ Your response must:
 4. Highlight key strengths and any challenges
 5. Provide business context that explains the underlying trends
 
-Format as a clear, professional analysis with 2-3 paragraphs maximum.
+Format as a clear, professional analysis with proper paragraph breaks. DO NOT use any special formatting that might break in markdown.
+Avoid using non-standard spacing, character formatting, or any other elements that might cause display issues.
 """
-        final_response = nvidia_gpt.invoke({"input": combined_prompt})
-
-        # Return the final answer plus individual summaries and image URLs for UI display
-        if isinstance(final_response, dict) and "output" in final_response:
-            return {
-                "assistant_response": final_response["output"],
-                "web_summary": web_summary,
-                "rag_summary": rag_summary,
-                "web_images": web_images  # Add images for use in final report
-            }
-        else:
-            return {
-                "assistant_response": str(final_response),
-                "web_summary": web_summary,
-                "rag_summary": rag_summary,
-                "web_images": web_images
-            }
+        final_response = nvidia_gpt.invoke(combined_prompt)
+        
+        # Clean the response to fix formatting issues
+        response_text = final_response.content if hasattr(final_response, 'content') else str(final_response)
+        cleaned_response = response_text.replace('\n\n\n', '\n\n').strip()
+        
+        return {
+            "assistant_response": cleaned_response,
+            "web_summary": web_summary,
+            "rag_summary": rag_summary,
+            "web_images": web_images,
+            "web_links": web_links
+        }
 
     except Exception as e:
+        print(f"Error in agent_node: {str(e)}")
         return {
             "assistant_response": f"Analysis error: {str(e)}",
             "web_summary": "Error processing web data.",
             "rag_summary": "Error processing historical data.",
-            "web_images": []
-        }
-
+            "web_images": [],
+            "web_links": []
+        }            
 
 def final_report_node(state: NvidiaGPTState) -> Dict:
     """Generate final report combining all sources in a clean, structured format."""
@@ -280,287 +285,316 @@ def final_report_node(state: NvidiaGPTState) -> Dict:
         rag_summary = state.get("rag_summary", "")
         web_summary = state.get("web_summary", "")
         web_images = state.get("web_images", [])
+        web_links = state.get("web_links", [])
+        
+        # Get Snowflake data
+        snowflake_output = state.get('snowflake_output', {})
+        valuation_data = state.get('valuation_data', {})
         
         # Initialize report sections
         introduction = f"# NVIDIA Analysis: {question}\n\n"
         executive_summary = "## Executive Summary\n\n"
         web_insights = "## Current Market Insights\n\n"
-        visualizations = "## Visualizations\n\n"
-        historical_data = "## Historical Performance\n\n"
+        visualizations = "## Visualizations\n\n### NVIDIA Performance Visualizations\n\n"
+        historical_data = "## Historical Performance\n\n### Historical Financial Performance\n\n"
         financial_metrics = "## Financial Metrics\n\n"
         analysis_section = "## Expert Analysis\n\n"
         conclusion = "## Conclusion\n\n"
         sources = "## Sources\n\n"
         
-        # Build Executive Summary section
-        if assistant_response:
-            executive_summary += assistant_response.strip() + "\n\n"
-        else:
-            executive_summary += "Analysis based on available data from financial reports, web sources, and metrics.\n\n"
-        
-        # Process Web Search results
-        raw_web = state.get("web_output", "")
-        if web_summary and "No web data" not in web_summary:
+        # Process Web Search results to extract insights
+        if web_summary and isinstance(web_summary, str) and "No web data" not in web_summary:
             web_insights += f"{web_summary}\n\n"
-        elif raw_web:
-            # Extract just the relevant web search insights
-            # Find the top highlights from the raw web search
-            web_lines = raw_web.split("\n")
-            top_results = []
-            for i, line in enumerate(web_lines):
-                if line.strip().startswith(("1.", "2.", "3.")) and i+1 < len(web_lines):
-                    top_results.append(f"- {web_lines[i+1].strip()}")
             
-            if top_results:
-                web_insights += "### Latest Findings\n\n"
-                web_insights += "\n".join(top_results) + "\n\n"
-        
-        # Add visualizations section with embedded images
-        if web_images:
-            visualizations += "### NVIDIA Performance Visualizations\n\n"
-            for i, img_url in enumerate(web_images[:3]):  # Limit to first 3 images
-                visualizations += f"#### Visualization {i+1}\n\n"
-                visualizations += f"![NVIDIA Visualization {i+1}]({img_url})\n\n"
+            # Add links if available for context
+            if web_links and isinstance(web_links, list) and len(web_links) > 0:
+                web_insights += "#### Key Sources:\n"
+                for i, link in enumerate(web_links[:3]):
+                    try:
+                        domain = link.split('/')[2]
+                        web_insights += f"- [{domain}]({link})\n"
+                    except:
+                        pass
+                web_insights += "\n"
         else:
-            visualizations += "No visualizations available for this query.\n\n"
-        
-        # Process RAG results
-        raw_rag_data = state.get("rag_output", {})
-        raw_rag_text = raw_rag_data.get("result", "")
-        
-        if rag_summary and "No RAG data" not in rag_summary:
+            web_insights = ""  # Skip this section entirely if no data
+            
+        # Process RAG results to extract insights
+        if rag_summary and isinstance(rag_summary, str) and "No historical data" not in rag_summary:
             historical_data += f"{rag_summary}\n\n"
+        else:
+            historical_data = ""  # Skip this section entirely if no data
             
-            # Try to extract a financial table if present
-            table_data = extract_financial_table(raw_rag_text)
-            if table_data:
-                historical_data += "\n### Key Financial Data\n\n"
-                historical_data += table_data + "\n\n"
-        elif raw_rag_text:
-            # Pull key financial metrics from RAG results when available
-            historical_data += "### Historical Performance Highlights\n\n"
-            
-            # Extract revenue and growth information from RAG content
-            revenue_data = []
-            
-            if "Revenue" in raw_rag_text and "$" in raw_rag_text:
-                # Find lines with revenue numbers
-                rag_lines = raw_rag_text.split("\n")
-                for line in rag_lines:
-                    if "Revenue" in line and "$" in line:
-                        clean_line = line.replace("|", "").strip()
-                        revenue_data.append(f"- {clean_line}")
-            
-            if revenue_data:
-                historical_data += "#### Revenue Performance\n\n"
-                historical_data += "\n".join(revenue_data[:3]) + "\n\n"
-            else:
-                historical_data += "Key financial data available in the quarterly reports. See analysis for insights.\n\n"
-        
-        # Process Snowflake metrics and chart
-        snowflake_output = state.get('snowflake_output', {})
-        valuation_data = state.get('valuation_data', {})
-        
-        if isinstance(snowflake_output, dict) and snowflake_output.get("status") == "success":
-            financial_metrics += "### Latest Financial Metrics\n\n"
-            
-            # Reference to chart if available
+        # Process visualizations
+        # Get chart path with fallbacks
+        # Process visualizations
+        # Get chart path with fallbacks
+        chart_path = snowflake_output.get('chart_path', '')
+        if not chart_path and isinstance(valuation_data, dict):
             chart_path = valuation_data.get('chart_path', '')
-            if chart_path:
-                financial_metrics += f"![NVIDIA Financial Metrics]({chart_path})\n\n"
             
-            # Format financial data in a clean table if available
-            financial_data = format_financial_data(valuation_data.get('data', {}))
-            if financial_data:
-                financial_metrics += "### Key Financial Indicators\n\n"
-                financial_metrics += financial_data + "\n\n"
+        has_visuals = False
+        # Try to encode the image as base64 for embedding
+        if chart_path and os.path.exists(chart_path):
+            try:
+                import base64
+                with open(chart_path, "rb") as img_file:
+                    b64_string = base64.b64encode(img_file.read()).decode()
+                
+                # Add embedded image in markdown
+                financial_metrics += "#### Financial visualization:\n"
+                financial_metrics += f"![NVIDIA Financial Metrics](data:image/png;base64,{b64_string})\n\n"
+                has_financial_metrics = True
+                
+                # Also add direct file reference as fallback
+                financial_metrics += f"*(Image path: {chart_path})*\n\n"
+            except Exception as e:
+                # Fallback to regular file reference
+                print(f"Error encoding image: {str(e)}")
+                financial_metrics += "#### Financial visualization:\n"
+                financial_metrics += f"![NVIDIA Financial Metrics]({chart_path})\n\n"
+                has_financial_metrics = True
+        
+        # Add web images if available
+        if web_images and isinstance(web_images, list):
+            for i, img_url in enumerate(web_images[:3]):
+                if img_url and isinstance(img_url, str):
+                    visualizations += f"#### Web Result {i+1}\n\n"
+                    visualizations += f"![NVIDIA Visualization {i+1}]({img_url})\n\n"
+                    has_visuals = True
+                
+        if not has_visuals:
+            visualizations = ""  # Skip this section entirely if no visuals
+            
+        # Process Snowflake metrics and chart
+        has_financial_metrics = False
+        if isinstance(snowflake_output, dict):
+            # Always add the financial metrics section
+            financial_metrics += "### Latest Financial Metrics\n\n"
             
             # Add analysis from the Snowflake agent
             analysis = snowflake_output.get('analysis', '')
             if analysis and isinstance(analysis, str):
-                financial_metrics += "### Financial Analysis\n\n"
                 financial_metrics += analysis.strip() + "\n\n"
-        
+                has_financial_metrics = True
+            
+            # Always check for chart path and add it to financial metrics section
+            chart_path = snowflake_output.get('chart_path', '')
+            if not chart_path and isinstance(valuation_data, dict):
+                chart_path = valuation_data.get('chart_path', '')
+                
+            if chart_path and os.path.exists(chart_path):
+                financial_metrics += "#### Financial visualization:\n"
+                financial_metrics += f"![NVIDIA Financial Metrics]({chart_path})\n\n"
+                has_financial_metrics = True
+
+        # If no financial metrics could be added, provide a message
+        if not has_financial_metrics:
+            financial_metrics += "No detailed financial metrics were available for this query.\n\n"
+            
         # Build the analysis section using the LLM's response
-        if assistant_response:
-            # Extract key insights as bullet points
-            analysis_section += "Based on the collected data, NVIDIA's performance shows the following key patterns:\n\n"
+        if assistant_response and isinstance(assistant_response, str):
+            # Clean up any formatting issues in the response
+            clean_response = assistant_response.strip().replace("\n\n\n", "\n\n")
             
-            # Extract 3-5 bullet points of insights
-            analysis_points = []
-            for sentence in assistant_response.split(". "):
-                if len(sentence) > 20 and not any(sentence.strip() in p for p in analysis_points):
-                    analysis_points.append(f"- {sentence.strip()}.")
-                if len(analysis_points) >= 4:
-                    break
+            # Extract key insights from the response
+            analysis_section += f"{clean_response}\n\n"
+        else:
+            analysis_section = ""  # Skip this section if no analysis
             
-            analysis_section += "\n".join(analysis_points) + "\n\n"
-        
-        # Conclusion section - create a concise wrap-up
-        conclusion += "NVIDIA continues to demonstrate leadership in the GPU and AI computing markets. "
-        
-        if assistant_response and ("down" in assistant_response.lower() or "decline" in assistant_response.lower()):
-            conclusion += "While facing some market challenges and inventory adjustments, "
-        
-        if assistant_response and ("growth" in assistant_response.lower() or "increase" in assistant_response.lower()):
-            conclusion += "With strong growth in key segments, particularly Data Center, "
+        # Build executive summary
+        if assistant_response and isinstance(assistant_response, str):
+            # Create a well-formatted executive summary
+            executive_summary += "### Key Findings\n\n"
             
-        conclusion += "the company is well-positioned for future opportunities in AI, data center acceleration, "
-        conclusion += "and next-generation computing platforms.\n\n"
-        
+            # Extract first paragraph as main summary
+            paragraphs = assistant_response.split("\n\n")
+            if paragraphs:
+                executive_summary += f"{paragraphs[0].strip()}\n\n"
+            
+            # Add highlights section with bullet points
+            executive_summary += "### Highlights\n\n"
+            
+            # Extract financial metrics from assistant response
+            metrics_found = False
+            for para in paragraphs[1:3]:  # Look in the next couple of paragraphs for metrics
+                if any(term in para.lower() for term in ['revenue', 'growth', 'increase', 'profit', 'earnings', '$', '%']):
+                    key_points = para.split('. ')
+                    for point in key_points[:3]:  # Limit to first 3 points for conciseness
+                        if point.strip():
+                            executive_summary += f"- {point.strip()}.\n"
+                            metrics_found = True
+            
+            # If no metrics were found, add some from web_summary
+            if not metrics_found and web_summary and isinstance(web_summary, str):
+                web_insights = web_summary.split('. ')
+                for insight in web_insights[:2]:  # Limit to first 2 insights
+                    if insight.strip():
+                        executive_summary += f"- {insight.strip()}.\n"
+            
+            # Add market context from rag_summary or financial metrics
+            executive_summary += "\n### Market Context\n\n"
+            
+            if financial_metrics and "no detailed financial metrics" not in financial_metrics.lower():
+                # Extract key financial context
+                sentences = [s.strip() + "." for s in financial_metrics.replace("\n", " ").split(".") if s.strip()]
+                for sentence in sentences[:2]:  # First 2 sentences
+                    if any(term in sentence.lower() for term in ["market", "industry", "position", "competitor", "trend"]):
+                        executive_summary += f"{sentence} "
+            
+            # Add fallback if no context was found
+            if "Market Context" in executive_summary and len(executive_summary.split("Market Context")[1].strip()) < 5:
+                if isinstance(rag_summary, str) and rag_summary.strip():
+                    executive_summary += "Based on historical data and current market conditions, "
+                    executive_summary += "NVIDIA continues to demonstrate strong market positioning in the GPU and AI computing sectors.\n\n"
+                else:
+                    executive_summary += "NVIDIA's performance should be evaluated in the context of the broader semiconductor industry and AI market trends.\n\n"
+        else:
+            # Fallback if no assistant response is available
+            executive_summary += "### Key Findings\n\n"
+            executive_summary += "Analysis of NVIDIA's performance based on available financial data, market reports, and industry trends.\n\n"
+            
+            executive_summary += "### Highlights\n\n"
+            executive_summary += "- Financial and operational metrics from multiple sources.\n"
+            executive_summary += "- Recent developments affecting NVIDIA's market position.\n"
+            executive_summary += "- Performance indicators across key business segments.\n\n"
+            
+            executive_summary += "### Market Context\n\n"
+            executive_summary += "NVIDIA's results should be viewed within the context of industry trends, competitive dynamics, and overall technology sector performance.\n\n"
+            
         # Build sources list
         sources_list = []
         if "Web Search Agent" in state.get("selected_agents", []):
-            sources_list.append("- **Web Search**: Latest news and market data")
+            source_text = "- **Web Search**: Latest news and market data"
+            if web_links:
+                source_text += f" ({len(web_links)} sources)"
+            sources_list.append(source_text)
         
         if "RAG Agent" in state.get("selected_agents", []):
-            rag_type = raw_rag_data.get("type", "all")
-            periods = raw_rag_data.get("periods", [""])
-            periods_str = ", ".join(periods) if isinstance(periods, list) else str(periods)
-            if rag_type == "specific" and periods_str:
-                sources_list.append(f"- **NVIDIA Quarterly Reports**: {periods_str}")
-            else:
-                sources_list.append("- **NVIDIA Quarterly Reports**: Historical data")
+            source_text = "- **NVIDIA Quarterly Reports**: Historical financial data"
+            if state.get("selected_periods") and state["selected_periods"] != ["all"]:
+                source_text += f" (Periods: {', '.join(state['selected_periods'])})"
+            sources_list.append(source_text)
         
         if "Snowflake Agent" in state.get("selected_agents", []):
-            sources_list.append("- **Financial Database**: Valuation metrics and analysis")
+            sources_list.append("- **Financial Database**: Valuation metrics and technical analysis")
             
         sources += "\n".join(sources_list) + "\n\n"
         
-        # Combine all sections
-        full_report = (
-            introduction +
-            executive_summary +
-            web_insights +
-            visualizations +
-            historical_data +
-            financial_metrics +
-            analysis_section +
-            conclusion +
-            sources
-        )
+        # Build conclusion
+        if isinstance(assistant_response, str):
+            # Extract conclusion from last paragraph if possible
+            paragraphs = assistant_response.split("\n\n")
+            if paragraphs and len(paragraphs) > 1:
+                conclusion += paragraphs[-1] + "\n\n"
+            else:
+                conclusion += "NVIDIA continues to demonstrate leadership in the GPU and AI computing markets. "
+                if "growth" in assistant_response.lower() or "increase" in assistant_response.lower():
+                    conclusion += "With strong growth in key segments, particularly Data Center, "
+                conclusion += "the company is well-positioned for future opportunities in AI and next-generation computing.\n\n"
+        else:
+            conclusion += "NVIDIA continues to demonstrate leadership in the GPU and AI computing markets. "
+            conclusion += "The company is well-positioned for future opportunities in AI and next-generation computing.\n\n"
+        
+        # Combine sections, but only include non-empty ones
+        sections = []
+        if introduction.strip():
+            sections.append(introduction)
+        if executive_summary.strip():
+            sections.append(executive_summary)
+        if web_insights.strip():
+            sections.append(web_insights)
+        if visualizations.strip():
+            sections.append(visualizations)
+        if historical_data.strip():
+            sections.append(historical_data)
+        if financial_metrics.strip():
+            sections.append(financial_metrics)
+        if analysis_section.strip():
+            sections.append(analysis_section)
+        if conclusion.strip():
+            sections.append(conclusion)
+        if sources.strip():
+            sections.append(sources)
+            
+        full_report = "\n".join(sections)
         
         # Return the structured report
         return {
-            "final_report": {
-                "formatted_report": full_report,
-                "introduction": introduction.strip(),
-                "executive_summary": executive_summary.strip(),
-                "web_insights": web_insights.strip(),
-                "visualizations": visualizations.strip(),
-                "historical_data": historical_data.strip(),
-                "financial_metrics": financial_metrics.strip(),
-                "analysis": analysis_section.strip(),
-                "conclusion": conclusion.strip(),
-                "sources": sources.strip()
-            }
+            "final_report": full_report,  # Single string for API compatibility
+            "formatted_report": full_report,
+            "introduction": introduction.strip(),
+            "executive_summary": executive_summary.strip(),
+            "web_insights": web_insights.strip() or "No current market data available for this query.",
+            "visualizations": visualizations.strip() or "No visualizations available for this query.",
+            "historical_data": historical_data.strip() or "No historical financial data available for this query.",
+            "financial_metrics": financial_metrics.strip() or "No financial metrics available for this query.",
+            "analysis": analysis_section.strip() or "No expert analysis available for this query.",
+            "conclusion": conclusion.strip(),
+            "sources": sources.strip(),
+            "web_images": web_images if isinstance(web_images, list) else [],
+            "web_links": web_links if isinstance(web_links, list) else []
         }
-
     except Exception as e:
-        print(f"Error in final_report_node: {e}")
-        return {
-            "final_report": {
-                "formatted_report": f"# Error Generating Report\n\nAn error occurred: {str(e)}",
-                "introduction": "Error generating report",
-                "key_findings": [f"Error: {str(e)}"],
-                "analysis": "Analysis unavailable due to error",
-                "conclusion": "Unable to generate conclusion",
-                "sources": []
-            }
-        }
-# Helper functions for report formatting
-def extract_financial_table(raw_text):
-    """Extract financial tables from RAG results and format as markdown."""
-    if "|" not in raw_text:
-        return ""
-    
-    table_lines = []
-    in_table = False
-    
-    for line in raw_text.split("\n"):
-        if "|" in line and "---" in line:
-            in_table = True
-            table_lines.append(line)
-        elif in_table and "|" in line:
-            table_lines.append(line)
-        elif in_table and "|" not in line:
-            in_table = False
-            table_lines.append("\n")
-    
-    if table_lines:
-        return "\n".join(table_lines)
-    return ""
-
-def format_financial_data(data):
-    """Format financial data as a clean markdown table."""
-    if not data or not isinstance(data, dict):
-        return ""
-    
-    table = "| Metric | Value |\n| ------ | ----- |\n"
-    
-    for key, value in data.items():
-        if isinstance(value, (int, float)):
-            formatted_value = f"${value:,.2f}" if value > 1 else f"{value:.3f}"
-        else:
-            formatted_value = str(value)
+        print(f"Error in final_report_node: {str(e)}")
+        import traceback
+        traceback.print_exc()
         
-        table += f"| {key} | {formatted_value} |\n"
-    
-    return table
+        # Return a basic error report
+        return {
+            "final_report": f"# Error Generating Report\n\nAn error occurred: {str(e)}",
+            "formatted_report": f"# Error Generating Report\n\nAn error occurred: {str(e)}",
+            "introduction": "Error generating report",
+            "executive_summary": f"Error: {str(e)}",
+            "web_insights": "Error retrieving market insights.",
+            "visualizations": "Error loading visualizations.",
+            "historical_data": "Error retrieving historical data.",
+            "financial_metrics": "Error retrieving financial metrics.",
+            "analysis": "Analysis unavailable due to error.",
+            "conclusion": "Unable to generate conclusion due to error.",
+            "sources": "Sources unavailable due to error."
+        }
 
-def create_tools():
-    """Create LangChain tools for the agent."""
-    return [
-        Tool(
-            name="web_search",
-            func=search_quarterly,
-            description="Search for NVIDIA quarterly financial information from web sources"
-        ),
-        Tool(
-            name="rag_search",
-            func=search_all_namespaces,
-            description="Search across all document repositories for NVIDIA information"
-        ),
-        Tool(
-            name="specific_quarter_search",
-            func=search_specific_quarter,
-            description="Search for specific quarter information from NVIDIA reports"
-        ),
-        Tool(
-            name="snowflake_query",
-            func=query_snowflake,
-            description="Query Snowflake database for NVIDIA financial metrics"
-        ),
-        Tool(
-            name="generate_report",
-            func=final_report_tool,
-            description="Generate a structured report from analyzed information"
+
+def initialize_nvidia_gpt(model_name="claude-3-haiku-20240307"):
+    """Initialize NvidiaGPT agent with the selected model."""
+    try:
+        # Map model prefixes to appropriate LangChain classes
+        model_map = {
+            "claude": ("langchain_anthropic", "ChatAnthropic", "ANTHROPIC_API_KEY"),
+            "gemini": ("langchain_google_genai", "ChatGoogleGenerativeAI", "GEMINI_API_KEY"),
+            "deepseek": ("langchain_openai", "ChatOpenAI", "DEEP_SEEK_API_KEY"),  # Update to match snowflake_agent.py
+            "grok": ("langchain_groq", "ChatGroq", "GROK_API_KEY")  # Update to match snowflake_agent.py
+        }
+        
+        # Find the matching model provider
+        for prefix, (module_name, class_name, api_key_name) in model_map.items():
+            if prefix in model_name.lower():
+                # Dynamically import the module and class
+                module = __import__(module_name, fromlist=[class_name])
+                model_class = getattr(module, class_name)
+                
+                # Create and return the LLM instance
+                return model_class(
+                    model=model_name,
+                    temperature=0,
+                    api_key=os.environ.get(api_key_name)
+                )
+        
+        # Default to Claude Haiku if no matching provider
+        return ChatAnthropic(
+            model="claude-3-haiku-20240307",
+            temperature=0,
+            anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')
         )
-    ]
-
-
-def initialize_nvidia_gpt():
-    """Initialize NvidiaGPT agent with simplified configuration."""
-    llm = ChatAnthropic(
-        model="claude-3-haiku-20240307",
-        temperature=0,
-        anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')
-    )
-    tools = create_tools()
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-    agent = initialize_agent(
-        tools=tools,
-        llm=llm,
-        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        memory=memory,
-        handle_parsing_errors=True,
-        max_iterations=3,
-        verbose=False
-    )
-    return agent
-
-
+    except Exception as e:
+        print(f"Error initializing LLM: {str(e)}. Falling back to default Claude model.")
+        return ChatAnthropic(
+            model="claude-3-haiku-20240307",
+            temperature=0,
+            anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')
+        )
+    
 def generate_workflow_diagram(filename="nvidia_workflow"):
     """Generates and saves workflow diagram with visual enhancements."""
     dot = Digraph(comment='NVIDIA Analysis Pipeline')
@@ -595,67 +629,53 @@ def generate_workflow_diagram(filename="nvidia_workflow"):
         return None
 
 
-def build_pipeline(selected_agents: List[str] = None):
-    """
-    Build and return the compiled pipeline with dynamic agent selection.
-    The flow ensures all selected agents connect to the agent node first
-    before report generation, optimized for different agent combinations.
-    """
-    if selected_agents is None:
-        selected_agents = []
+def build_pipeline(selected_agents: List[str] = None, model: str = "claude-3-haiku-20240307"):
+    """Build and return the compiled pipeline with dynamic agent selection."""
+    if not selected_agents:
+        selected_agents = []  # Use empty list instead of None
 
     graph = StateGraph(NvidiaGPTState)
-
-    # Make "start" a real node
+    
+    # Add nodes and connect them in optimal order
+    nodes_added = {}
+    
+    # Add start node
     graph.add_node("start", start_node)
     graph.set_entry_point("start")
-
-    # Add the agents in optimal order based on data dependencies
     last_node = "start"
     
-    # Optimal processing order: RAG -> Web Search -> Snowflake
-    # This provides historical context before current data before financial metrics
+    # Add agent nodes in optimal order: RAG -> Web -> Snowflake
+    agent_nodes = {
+        "RAG Agent": ("rag_search", rag_search_node),
+        "Web Search Agent": ("web_search", web_search_node),
+        "Snowflake Agent": ("snowflake", snowflake_node)
+    }
     
-    # If RAG is selected, add it first (provides historical context)
-    if "RAG Agent" in selected_agents:
-        graph.add_node("rag_search", rag_search_node)
-        graph.add_edge(last_node, "rag_search")
-        last_node = "rag_search"
+    for agent, (node_name, node_func) in agent_nodes.items():
+        if agent in selected_agents:
+            graph.add_node(node_name, node_func)
+            graph.add_edge(last_node, node_name)
+            last_node = node_name
+            nodes_added[agent] = node_name
     
-    # Web Search can benefit from RAG context if available
-    if "Web Search Agent" in selected_agents:
-        graph.add_node("web_search", web_search_node)
-        graph.add_edge(last_node, "web_search")
-        last_node = "web_search"
+    # Initialize LLM
+    nvidia_gpt = initialize_nvidia_gpt(model)
     
-    # Snowflake analysis works best with context from both RAG and web search
-    if "Snowflake Agent" in selected_agents:
-        graph.add_node("snowflake", snowflake_node)
-        graph.add_edge(last_node, "snowflake")
-        last_node = "snowflake"
-
-    # Add the agent node to process all collected information
-    nvidia_gpt = initialize_nvidia_gpt()
+    # Add synthesis and report nodes
     graph.add_node("agent", lambda state: agent_node(state, nvidia_gpt))
-    
-    # Connect the last data-gathering node to the agent
-    graph.add_edge(last_node, "agent")
-    
-    # Add report generator node
     graph.add_node("report_generator", final_report_node)
     
-    # Agent always connects to report generator
+    # Connect last data node to agent
+    graph.add_edge(last_node, "agent")
     graph.add_edge("agent", "report_generator")
-    
-    # Finally connect to END
     graph.add_edge("report_generator", END)
-
+    
     return graph.compile()
 
 if __name__ == "__main__":
     try:
         # Example with all agents for comprehensive analysis
-        pipeline = build_pipeline(["RAG Agent", "Web Search Agent", "Snowflake Agent"])
+        pipeline = build_pipeline(["RAG Agent", "Web Search Agent", "Snowflake Agent"],model="gemini-1.5-flash")
 
         # Define a clear test query
         test_query = "Analyze NVIDIA's financial performance in Q4 2023"
@@ -664,8 +684,8 @@ if __name__ == "__main__":
         result = pipeline.invoke({
             "input": test_query,
             "question": test_query,
-            "search_type": "All Quarters",
-            # "selected_periods": ["2023q4"],
+            "search_type": "Specific Quarter",
+            "selected_periods": ["2023q4"],
             "selected_agents": ["RAG Agent", "Web Search Agent", "Snowflake Agent"],
             "chat_history": [],
             "intermediate_steps": []
@@ -673,9 +693,15 @@ if __name__ == "__main__":
 
         print("\n✅ Analysis Complete!")
         
-        # Extract the formatted report for display
-        final_report = result.get("final_report", {})
-        formatted_report = final_report.get("formatted_report", "No report generated")
+        # Fix: Check the type of final_report and handle appropriately
+        final_report = result.get("final_report")
+        
+        # If final_report is a dictionary, get formatted_report from it
+        # Otherwise, assume it's already the formatted content
+        if isinstance(final_report, dict):
+            formatted_report = final_report.get("formatted_report", "No report generated")
+        else:
+            formatted_report = final_report if final_report else "No report generated"
         
         # Print the complete formatted report for Streamlit markdown display
         print(formatted_report)

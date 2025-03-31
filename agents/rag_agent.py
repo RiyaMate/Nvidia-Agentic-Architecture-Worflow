@@ -12,6 +12,10 @@ from io import BytesIO
 import re
 import os
 from sentence_transformers import SentenceTransformer
+# add imports for the agents
+from langchain_anthropic import ChatAnthropic
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from dotenv import load_dotenv
 load_dotenv(override=True)
 # Initialize services
@@ -26,6 +30,97 @@ cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index = pc.Index(os.getenv("PINECONE_INDEX_NAME", "nvidia-reports"))
+
+class RAGAgent:
+    def __init__(self, model_name):
+        """Initialize the RAG Agent with a language model."""
+        # Initialize the appropriate LLM based on the model name
+        if "claude" in model_name:
+            self.llm = ChatAnthropic(
+                model=model_name,
+                temperature=0,
+                anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')
+            )
+        elif "gemini" in model_name:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            self.llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                temperature=0,
+                google_api_key=os.environ.get('GOOGLE_API_KEY')
+            )
+        elif "deepseek" in model_name:
+            from langchain_openai import ChatOpenAI
+            self.llm = ChatOpenAI(
+                model=model_name,
+                temperature=0,
+                api_key=os.environ.get('DEEP_SEEK_API_KEY')
+            )
+        elif "grok" in model_name:
+            from langchain_groq import ChatGroq
+            self.llm = ChatGroq(
+                model=model_name,
+                temperature=0,
+                api_key=os.environ.get('GROK_API_KEY')
+            )
+        else:
+            self.llm = ChatAnthropic(
+                model="claude-3-haiku-20240307",
+                temperature=0,
+                anthropic_api_key=os.environ.get('ANTHROPIC_API_KEY')
+            )
+        self.prompt = PromptTemplate.from_template("""
+        You are a financial analyst specialized in analyzing NVIDIA quarterly reports and financial data.
+        Based on the provided quarterly report excerpts, create a comprehensive analysis.
+
+        SEARCH RESULTS:
+        {context}
+
+        QUERY:
+        {query}
+
+        Please provide a detailed report following this structure:
+        1. Executive Summary
+           - Key findings related to the query
+           - Overall financial health indicators
+        
+        2. Financial Metrics Analysis
+           - Revenue and growth trends
+           - Segment performance
+           - Key financial ratios (if available)
+        
+        3. Business Highlights
+           - Major developments
+           - Product launches or technological advancements
+           - Strategic initiatives
+        
+        4. Market Position & Competition
+           - Market share information
+           - Competitive advantages
+           - Industry trends
+        
+        5. Future Outlook
+           - Company guidance
+           - Growth opportunities
+           - Potential challenges
+
+        Summarize the information in a professional, analytical tone, focusing on the most relevant data points 
+        from the provided quarterly reports.
+
+        ANALYSIS:
+    """)
+    
+    def process(self,query:str,context:str) -> str:
+        """Process the search results and provide insights."""
+        if not context or context.startswith("No results found"):
+            return "No relevant information found for your query.Try refining your search terms or exploring different time periods."
+        #Create a chain to process the search results
+        chain = self.prompt | self.llm | StrOutputParser()
+        # run the chain with the search results 
+        result = chain.invoke({
+            "query" : query,
+            "context" : context
+        })
+        return result
 
 def clean_base64_images(text: Any) -> str:
     """
@@ -114,7 +209,7 @@ def format_rag_contexts(matches: List[Dict]) -> str:
     return "\n---\n".join(contexts)
 
 @tool("search_all_namespaces")
-def search_all_namespaces(query: str, alpha: float = 0.5):
+def search_all_namespaces(query: str, alpha: float = 0.5,model_name:str = "claude-3-haiku-20240307"):
     """
     Searches across all quarterly report namespaces using hybrid search.
     """
@@ -148,7 +243,14 @@ def search_all_namespaces(query: str, alpha: float = 0.5):
     
     if results:
         results = rerank_results(query, results)
-        return format_rag_contexts(results)
+        formatted_contexts = format_rag_contexts(results)
+        # Initialize and use the agent to process results
+        agent = RAGAgent(model_name=model_name) 
+        processed_result = agent.process(query, formatted_contexts)
+        return{
+            "raw_contexts":formatted_contexts,
+            "insights": processed_result
+        }
     else:
         return "No results found across any namespace."
     
@@ -188,7 +290,14 @@ def search_specific_quarter(input_dict: Dict) -> str:
     # Rerank combined results
     if results:
         results = rerank_results(query, results)
-        return format_rag_contexts(results)
+        formatted_contexts = format_rag_contexts(results)
+        model_name = input_dict.get("model_name", "claude-3-haiku-20240307")
+        agent = RAGAgent(model_name=model_name)
+        process_results = agent.process(query,formatted_contexts)
+        return {
+            "raw_contexts": formatted_contexts,
+            "insights": process_results
+        }
     return "No results found in selected quarters."
 
     
@@ -196,25 +305,27 @@ if __name__ == "__main__":
     # Test search_all_namespaces with image extraction
     query = "NVIDIA GPU architecture diagrams"
     result = search_all_namespaces.invoke(query)
-    if result:
-        print("\n=== Search Results with Images ===")
-        print(result)
+    if isinstance(result, dict):
+        print("\n=== Search Results with ===")
+        print(result["raw_contexts"])
+        print("\n=== AI Agent Insights ===")
+        print(result["insights"])
     else:
-        print("No results found")
+        print(result["raw_contexts"])
         
     # Test searching across multiple periods
     test_query = "NVIDIA revenue growth charts"
     # Define multiple periods to search across
     test_periods = ["2023q1", "2023q2", "2024q1"]
     
-# Fix: Properly structure the input dictionary
-
-    # input_dict = {"input_dict" : {
-    #     "query": test_query,
-    #     "selected_periods": test_periods
-    # }}
+    input_dict = {
+        "query": test_query,
+        "selected_periods": test_periods
+    }
     
     # specific_result = search_specific_quarter.invoke(input_dict)
     
     # print("\n=== Multiple Quarter Results with Images ===")
-    # print(specific_result)
+    # print(specific_result["raw_contexts"] if isinstance(specific_result, dict) else specific_result)
+    # print("\n=== AI Agent Insights ===")
+    # print(specific_result["insights"] if isinstance(specific_result, dict) else "")

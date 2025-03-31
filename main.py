@@ -15,6 +15,7 @@ class QueryRequest(BaseModel):
     search_type: str
     selected_periods: List[str]
     agents: List[str]
+    model: str = "claude-3-haiku-20240307"
 
     class Config:
         json_schema_extra = {
@@ -22,7 +23,8 @@ class QueryRequest(BaseModel):
                 "question": "Analyze NVIDIA's performance",
                 "search_type": "Specific Quarter",
                 "selected_periods": ["2023q4"],
-                "agents": ["RAG Agent", "Web Search Agent"]
+                "agents": ["RAG Agent", "Web Search Agent"],
+                "model": "claude-3-haiku-20240307"
             }
         }
 
@@ -38,11 +40,12 @@ async def research_report(request: QueryRequest):
             "selected_periods": request.selected_periods,
             "chat_history": [],
             "intermediate_steps": [],
-            "selected_agents": request.agents  # Pass selected agents to pipeline
+            "selected_agents": request.agents,
+            "model": request.model,
         }
 
         # Initialize pipeline with selected agents
-        pipeline = build_pipeline(selected_agents=request.agents)
+        pipeline = build_pipeline(selected_agents=request.agents,model=request.model)
         
         # Execute pipeline
         result = pipeline.invoke(state)
@@ -52,6 +55,13 @@ async def research_report(request: QueryRequest):
                 status_code=500,
                 detail="Pipeline execution failed to produce results"
             )
+        if isinstance(result.get("final_report"), str):
+            result["final_report"] = result["final_report"].replace("\\n", "\n")
+        
+        if "web_links" not in result and "web_links"  in state:
+            result["web_links"] = state["web_links"]
+        if "web_images" not in result and "web_images" in state:
+            result["web_images"] = state["web_images"]
             
         return result
         
@@ -61,6 +71,3 @@ async def research_report(request: QueryRequest):
             detail=f"Analysis failed: {str(e)}"
         )
 
-def format_report(report_dict: Dict) -> str:
-    """Format report dictionary into markdown text"""
-    # ... existing format_report code ...

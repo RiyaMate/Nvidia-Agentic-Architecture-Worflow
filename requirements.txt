@@ -6,6 +6,9 @@ langchain
 langchain-community
 langchain-core
 langchain-anthropic
+langchain_openai
+langchain_groq 
+langchain_google_genai
 langgraph
 pinecone-client
 sentence-transformers
@@ -14,7 +17,6 @@ snowflake-connector-python
 matplotlib
 serpapi
 graphviz
-langchain_openai
 ipykernel
 pyarrow<19.0.0
 boto3
