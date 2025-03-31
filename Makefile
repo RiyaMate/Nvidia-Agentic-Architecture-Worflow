@@ -32,14 +32,14 @@ ragagent:
 
 # Build commands
 fastapibuild:
-	docker build --platform=linux/amd64 -t gcr.io/gen-lang-client-0567410120/fastapi-agentic-app .
+	docker build -t gcr.io/gen-lang-client-0567410120/fastapi-agentic-app .
 
 streamlitbuild:
-	docker build --platform=linux/amd64 -t gcr.io/gen-lang-client-0567410120/streamlit-agentic-app .
+	docker build -t gcr.io/gen-lang-client-0567410120/streamlit-agentic-app .
 
 # Run commands
 fastapirun:
-	docker run --name fastapi-app -p 8080:8080 gcr.io/gen-lang-client-0567410120/fastapi-agentic-app
+	docker run -it --env-file .env -p 8000:8000 gcr.io/gen-lang-client-0567410120/fastapi-agentic-app
 
 streamlitrun:
     docker run --name streamlit-app -p 8501:8501 gcr.io/gen-lang-client-0567410120/streamlit-agentic-app

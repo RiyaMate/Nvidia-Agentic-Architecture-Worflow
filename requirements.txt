@@ -15,12 +15,12 @@ sentence-transformers
 openai
 snowflake-connector-python
 matplotlib
-serpapi
+serpapi==0.1.5
 graphviz
 ipykernel
 pyarrow<19.0.0
 boto3
 bs4
-sqlachemy
+sqlalchemy
 yahooquery
 snowflake-sqlalchemy
