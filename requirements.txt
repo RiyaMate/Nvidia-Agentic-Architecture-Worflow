@@ -24,3 +24,4 @@ bs4
 sqlalchemy
 yahooquery
 snowflake-sqlalchemy
+google-search-results
