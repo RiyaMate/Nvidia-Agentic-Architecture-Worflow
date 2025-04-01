@@ -219,6 +219,9 @@ result = pipeline.invoke({
     "selected_periods": ["string"]
   }
   ```
+##Deployed Links
+FASTAPI = https://fastapi-agentic-app-84150543519.us-central1.run.app/docs
+STREAMLIT = https://nvidia-research-assistant.streamlit.app/
 
 ## Contributing
 
