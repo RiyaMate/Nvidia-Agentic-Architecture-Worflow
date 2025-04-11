@@ -248,12 +248,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Authors
 
-- Your Name - Initial work
-
-## Contact
-
-- Email: your.email@example.com
-- Project Link: https://github.com/yourusername/project
+- Yash Khavnekar
+- Shushil Girish
+- Riya Mate
 
 ## FAQ
 
