@@ -221,7 +221,7 @@ result = pipeline.invoke({
   ```
 
 
-- **GOOGLE CODELABS** = (https://codelabs-preview.appspot.com/?file_id=https://docs.google.com/document/d/1ICUz9IDBFdY6gg08xEMlXLj2zhaEvnilhxXG8se3FGs/edit?tab=t.0#0)
+- **GOOGLE CODELABS** = (https://codelabs-preview.appspot.com/?file_id=https://docs.google.com/document/d/1dUkDOz1Z4bRPgfTR6hLUDmN8iQyxZUtDGJL6RX7y-wc/edit?tab=t.0#3)
 
 ## Contributing
 
